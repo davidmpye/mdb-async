@@ -1,0 +1,10 @@
+[package]
+name = "mdb"
+version = "0.1.0"
+edition = "2021"
+licence = ""
+[dependencies]
+defmt = "0.3.10"
+embassy-time = "0.4.0"
+embedded-io-async = "0.6.1"
+enumn = "0.1.14"
