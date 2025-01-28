@@ -48,18 +48,17 @@ impl<T: Read + Write> Mdb<T> {
         for (i, byte) in msg.iter().enumerate() {
             //First byte is an address byte, 9th bit high
             let ninth_bit = if i == 0 { 0x01u8 } else { 0x00u8 };
-            let _ = self.uart.write(&[*byte, ninth_bit]).await;
+            let _ = self.uart.write(&[ninth_bit, *byte]).await;
             //Update checksum calculation
             checksum = checksum.wrapping_add(*byte); //Note, 9th bit not included in checksum
         }
-        let _ = self.uart.write(&[checksum, 0x00]).await;
+        let _ = self.uart.write(&[0x00, checksum]).await;
     }
 
     pub async fn send_data_and_confirm_ack(&mut self, msg: &[u8]) -> bool {
         let _ = self.send_data(msg).await;
-        let mut buf= [0x00u8;6];
         //We supply an empty buffer as we don't want any bytes received, only a status.
-        match self.receive_response(&mut buf).await {
+        match self.receive_response(&mut []).await {
             Ok(MDBResponse::StatusMsg(MDBStatus::ACK)) => {
                 true
             },
@@ -87,7 +86,7 @@ impl<T: Read + Write> Mdb<T> {
                     }
                     2 => {
                         //This should be an ACK or NAK.
-                        match scratch_buf[0] {
+                        match scratch_buf[1] {
                             0x00 => {
                                 return Ok(MDBResponse::StatusMsg(MDBStatus::ACK));
                             }
@@ -97,7 +96,7 @@ impl<T: Read + Write> Mdb<T> {
                             _ => {
                                 error!(
                                     "Invalid 1 byte message - not NAK/ACK - was {=u8:#x}",
-                                    scratch_buf[0]
+                                    scratch_buf[1]
                                 );
                                 return Err(MDBError::MalformedMessage);
                             }
@@ -106,13 +105,13 @@ impl<T: Read + Write> Mdb<T> {
                     _ => {
                         //Multibyte message.
                         //Check 9th bit on last byte - if it isn't 1, there's a problem!
-                        if scratch_buf[count - 1] == 0x01 {
+                        if scratch_buf[count - 2] == 0x01 {
                             debug!("Full message received (last bit high)");
                             //Message complete
                             for (i, byte) in scratch_buf[0..count].iter().enumerate() {
                                 //Only 'even' bytes are the 8 bits we're interested in - 9th bit doesnt count here
                                 //Also, don't add the checksum to itself
-                                if i % 2 == 0 && i != count - 2 {
+                                if i % 2 != 0 && i != count - 1 {
                                     calculated_checksum = calculated_checksum.wrapping_add(*byte);
                                     if buf.len() <= i / 2 {
                                         error!("Buffer overrun - length insufficient");
@@ -122,7 +121,7 @@ impl<T: Read + Write> Mdb<T> {
                                     bytes_out += 1;
                                 }
                             }
-                            if scratch_buf[count - 2] == calculated_checksum {
+                            if scratch_buf[count - 1] == calculated_checksum {
                                 debug!("Message checksum correct - received {} bytes", bytes_out);
                                 //Send ACK
                                 self.send_status_message(MDBStatus::ACK).await;
@@ -130,7 +129,7 @@ impl<T: Read + Write> Mdb<T> {
                             } else {
                                 error!(
                                     "Message checksum invalid - got {=u8:#x}, expected {=u8:#x}",
-                                    scratch_buf[count - 2],
+                                    scratch_buf[count - 1],
                                     calculated_checksum
                                 );
                                 return Err(MDBError::WrongChecksum);
