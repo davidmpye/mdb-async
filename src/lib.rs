@@ -40,19 +40,19 @@ impl<T: Read + Write> Mdb<T> {
             MDBStatus::NAK => 0xFFu8,
             MDBStatus::RET => 0xAAu8,
         };
-        let _ = self.uart.write(&[0x00u8, byte]).await;
+        let _ = self.uart.write(&[byte, 0x00u8]).await;
     }
 
     pub async fn send_data(&mut self, msg: &[u8]) {
         let mut checksum: u8 = 0x00;
         for (i, byte) in msg.iter().enumerate() {
             //First byte is an address byte, 9th bit high
-            let prefix_byte = if i == 0 { 0x01u8 } else { 0x00u8 };
-            let _ = self.uart.write(&[prefix_byte, *byte]).await;
+            let ninth_bit = if i == 0 { 0x01u8 } else { 0x00u8 };
+            let _ = self.uart.write(&[*byte, ninth_bit]).await;
             //Update checksum calculation
             checksum = checksum.wrapping_add(*byte); //Note, 9th bit not included in checksum
         }
-        let _ = self.uart.write(&[0x00, checksum]).await;
+        let _ = self.uart.write(&[checksum, 0x00]).await;
     }
 
     pub async fn send_data_and_confirm_ack(&mut self, msg: &[u8]) -> bool {
