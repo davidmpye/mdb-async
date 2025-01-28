@@ -188,7 +188,7 @@ pub enum CoinAcceptorLevel {
 }
 
 impl CoinAcceptor {
-    pub async fn init<T: Write, U: Read> (bus: &mut Mdb<T, U>) -> Option<Self> {
+    pub async fn init<T: Read + Write> (bus: &mut Mdb<T>) -> Option<Self> {
         //Start with a reset
         bus.send_data_and_confirm_ack(&[RESET_CMD]).await;
 
@@ -314,9 +314,9 @@ impl CoinAcceptor {
         return None;
     }
     
-    pub async fn l3_enable_features<T: Write, U: Read>(
+    pub async fn l3_enable_features<T: Read + Write>(
         &mut self,
-        bus: &mut Mdb<T, U>,
+        bus: &mut Mdb<T>,
         feature_mask: u8,
     ) -> Result<(),()> {
         if !matches!(self.feature_level, CoinAcceptorLevel::Level3) {
@@ -342,7 +342,7 @@ impl CoinAcceptor {
         }        
     }
 
-    async fn update_coin_counts<T: Write, U:Read>(&mut self, bus: &mut Mdb<T, U>) -> Result<(),()> {
+    async fn update_coin_counts<T: Read + Write>(&mut self, bus: &mut Mdb<T>) -> Result<(),()> {
         bus.send_data(&[TUBE_STATUS_CMD]).await;
 
         let mut buf: [u8; 18] = [0x00; 18];
@@ -369,9 +369,9 @@ impl CoinAcceptor {
         }
     }
 
-    pub async fn enable_coins<T: Write, U:Read>(
+    pub async fn enable_coins<T: Read + Write>(
         &mut self,
-        bus: &mut Mdb<T,U>,
+        bus: &mut Mdb<T>,
         coin_mask: u16,
     ) -> bool {
         //Which coins you want to enable - NB We enable manual dispense for all coins automatically.
@@ -517,9 +517,9 @@ impl CoinAcceptor {
         }
     }
 */
-    pub async fn poll<T:Write, U:Read>(
+    pub async fn poll<T:Write + Read>(
         &mut self,
-        bus: &mut Mdb<T,U>,
+        bus: &mut Mdb<T>,
     ) -> [Option<PollEvent>; 16] {
         //You might get up to 16 poll events and you should process them in order..
         let mut poll_results: [Option<PollEvent>; 16] = [None; 16];

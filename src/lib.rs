@@ -24,14 +24,13 @@ pub enum MDBResponse<T, U> {
     StatusMsg(U),
 }
 
-pub struct Mdb<T: Write, U: Read> {
-    uart_tx: T,
-    uart_rx: U,
+pub struct Mdb<T: Write + Read> {
+    uart: T
 }
 
-impl<T: Write, U: Read> Mdb<T, U> {
-    pub fn new(uart_tx: T, uart_rx: U) -> Self {
-        Self { uart_tx, uart_rx }
+impl<T: Read + Write> Mdb<T> {
+    pub fn new(uart : T) -> Self {
+        Self { uart }
     }
 
     pub async fn send_status_message(&mut self, status: MDBStatus) {
@@ -41,7 +40,7 @@ impl<T: Write, U: Read> Mdb<T, U> {
             MDBStatus::NAK => 0xFFu8,
             MDBStatus::RET => 0xAAu8,
         };
-        let _ = self.uart_tx.write(&[0x00u8, byte]).await;
+        let _ = self.uart.write(&[0x00u8, byte]).await;
     }
 
     pub async fn send_data(&mut self, msg: &[u8]) {
@@ -49,11 +48,11 @@ impl<T: Write, U: Read> Mdb<T, U> {
         for (i, byte) in msg.iter().enumerate() {
             //First byte is an address byte, 9th bit high
             let prefix_byte = if i == 0 { 0x01u8 } else { 0x00u8 };
-            let _ = self.uart_tx.write(&[prefix_byte, *byte]).await;
+            let _ = self.uart.write(&[prefix_byte, *byte]).await;
             //Update checksum calculation
             checksum = checksum.wrapping_add(*byte); //Note, 9th bit not included in checksum
         }
-        let _ = self.uart_tx.write(&[0x00, checksum]).await;
+        let _ = self.uart.write(&[0x00, checksum]).await;
     }
 
     pub async fn send_data_and_confirm_ack(&mut self, msg: &[u8]) -> bool {
@@ -80,7 +79,7 @@ impl<T: Write, U: Read> Mdb<T, U> {
         let mut calculated_checksum: u8 = 0x00;
         let mut bytes_out: usize = 0;
 
-        match self.uart_rx.read(&mut scratch_buf).await {
+        match self.uart.read(&mut scratch_buf).await {
             Ok(count) => {
                 match count {
                     0 => {
