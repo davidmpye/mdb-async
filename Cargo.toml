@@ -8,3 +8,4 @@ defmt = "0.3.10"
 embassy-time = "0.4.0"
 embedded-io-async = "0.6.1"
 enumn = "0.1.14"
+vmc-icd = { version = "0.1.0", path = "../snackbot/vmc/vmc-icd" }

@@ -10,6 +10,9 @@ use defmt::*;
 
 use enumn::N;
 
+
+use vmc_icd::{PollEvent, ChangerStatus, CoinInsertedEvent, CoinRouting, ManualDispenseEvent};
+
 //All coin acceptors should support these commands
 const RESET_CMD: u8 = 0x08;
 const SETUP_CMD: u8 = 0x09;
@@ -66,7 +69,7 @@ pub struct CoinType {
     pub tube_full: bool,
     pub num_coins: u8,
 }
-
+/* 
 #[derive(Copy, Clone, Format, N)]
 pub enum ChangerStatus {
     Ack = 0x00,
@@ -84,7 +87,7 @@ pub enum ChangerStatus {
     CoinJam = 0x0C,
     PossibleCoinRemoval = 0x0D,
 }
-
+ */
 #[derive(Copy, Clone, Format)]
 pub enum L3ChangerStatus {
     PoweringUp,
@@ -147,6 +150,7 @@ pub enum CoinCassetteErrorSubtype {
     SunlightOnSensors = 0x04,
 }
 
+/*
 #[derive(Copy, Clone)]
 pub struct CoinInsertedEvent {
     pub coin_type: u8,        //What number coin it is
@@ -180,7 +184,7 @@ pub enum CoinRouting {
     Reject,
     Unknown,
 }
-
+ */
 #[derive(Format)]
 pub enum CoinAcceptorLevel {
     Level2,
