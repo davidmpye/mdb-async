@@ -67,86 +67,6 @@ pub struct CoinType {
     pub num_coins: u8,
 }
 
-#[derive(Copy, Clone, Format, N)]
-pub enum ChangerStatus {
-    Ack = 0x00,
-    EscrowPressed = 0x01,
-    ChangerPayoutBusy = 0x02,
-    NoCredit = 0x03,
-    DefectiveTubeSensor = 0x04,
-    DoubleArrival = 0x05,
-    AcceptorUnplugged = 0x06,
-    TubeJam = 0x07,
-    RomChecksumError = 0x08,
-    CoinRoutingError = 0x09,
-    ChangerBusy = 0x0A,
-    ChangerWasReset = 0x0B,
-    CoinJam = 0x0C,
-    PossibleCoinRemoval = 0x0D,
-}
-
-#[derive(Copy, Clone, Format)]
-pub enum L3ChangerStatus {
-    PoweringUp,
-    PoweringDown,
-    Ok,
-    KeypadShifted,
-    ManualFillOrPayoutActive,
-    NewInventoryInfoAvailable,
-    InhibitedByVmc,
-    GeneralError(GeneralErrorSubtype), //Subcode attached
-    DiscriminatorError(DiscriminatorErrorSubtype), //Subcode attached
-    AcceptGateError(AcceptGateErrorSubtype),
-    SeparatorError(SeparatorModuleErrorSubtype),
-    DispenserError, //Only non-specific (0x00) defined, so no point!
-    CoinCassetteError(CoinCassetteErrorSubtype),
-}
-
-#[derive(Copy, Clone, Format, N)]
-pub enum GeneralErrorSubtype {
-    NonSpecific = 0x00,
-    Cksum1 = 0x01,
-    Cksum2 = 0x02,
-    LowLineVoltage = 0x03,
-}
-
-#[derive(Copy, Clone, Format, N)]
-pub enum DiscriminatorErrorSubtype {
-    NonSpecific = 0x00,
-    FlightDeckOpen = 0x10,
-    EscrowReturnStuck = 0x11,
-    CoinJam = 0x30,
-    DiscriminationBelowStandard = 0x41,
-    ValSensorAErr = 0x50,
-    ValSensorBErr = 0x51,
-    ValSensorCErr = 0x52,
-    TempExceeded = 0x53,
-    OpticsFailure = 0x54,
-}
-
-#[derive(Copy, Clone, Format, N)]
-pub enum AcceptGateErrorSubtype {
-    NonSpecific = 0x00,
-    CoinsDidNotExit = 0x30,
-    GateAlarm = 0x31,
-    GateOpeNNoCoin = 0x40,
-    PostGateSensorCovered = 0x50,
-}
-
-#[derive(Copy, Clone, Format, N)]
-pub enum SeparatorModuleErrorSubtype {
-    NonSpecific = 0x00,
-    SortSensor = 0x10,
-}
-
-#[derive(Copy, Clone, Format, N)]
-pub enum CoinCassetteErrorSubtype {
-    NonSpecific = 0x00,
-    CassetteRemoved = 0x02,
-    CashBoxSensorError = 0x03,
-    SunlightOnSensors = 0x04,
-}
-
 #[derive(Copy, Clone)]
 pub struct CoinInsertedEvent {
     pub coin_type: u8,        //What number coin it is
@@ -168,7 +88,7 @@ pub struct ManualDispenseEvent {
 pub enum PollEvent {
     //Slugs inserted since last poll
     SlugCount(u8),
-    Status(ChangerStatus),
+    Status(u8),
     Coin(CoinInsertedEvent),
     ManualDispense(ManualDispenseEvent),
 }
@@ -566,16 +486,8 @@ impl CoinAcceptor {
                                         Some(PollEvent::SlugCount(byte & 0x1F));
                                     result_count += 1;
                                 } else {
-                                    match ChangerStatus::n(*byte) {
-                                        Some(status) => {
-                                            poll_results[result_count] =
-                                                Some(PollEvent::Status(status));
-                                            result_count += 1;
-                                        }
-                                        None => {
-                                            error!("Unrecognised status byte received in poll {=u8:#x}", byte);
-                                        }
-                                    }
+                                    //It's a status - transcribe the byte across
+                                    poll_results[result_count] = Some(PollEvent::Status(*byte));                                    
                                 };
                             }
                             ParseState::CoinDeposited(b) => {
@@ -637,20 +549,25 @@ impl CoinAcceptor {
 
         poll_results
     }
-/* 
-    pub fn l3_diagnostic_status<T: embedded_io::Write + embedded_io::Read>(
+
+    pub async fn l3_diagnostic_status<T: embedded_io_async::Write + embedded_io_async::Read>(
         &mut self,
         bus: &mut Mdb<T>,
-    ) -> [Option<L3ChangerStatus>; 8] {
-        //Fixme - we should check we are a l3 changer prior to sending this command....
-        let mut statuses: [Option<L3ChangerStatus>; 8] = [None; 8];
+    ) -> [Option<[u8;2]>; 8] {
+
+        let mut statuses: [Option<[u8;2]>; 8] = [None; 8];
         let mut num_statuses: usize = 0;
 
-        bus.send_data(&[L3_CMD_PREFIX, L3_DIAG_CMD]);
+        if ! matches!(self.feature_level, CoinAcceptorLevel::Level3) {
+            error!("Cannot get L3 diagnostic status on non L3 mech");
+            return statuses;
+        };
+
+        bus.send_data(&[L3_CMD_PREFIX, L3_DIAG_CMD]).await;
 
         let mut buf: [u8; 16] = [0x00; 16];
-        match bus.receive_response(&mut buf) {
-            MDBResponse::Data(len) => {
+        match bus.receive_response(&mut buf).await {
+            Ok(MDBResponse::Data(len)) => {
                 //Two byte statemachine for parsing
                 pub enum State {
                     AwaitingFirstByte,
@@ -665,99 +582,18 @@ impl CoinAcceptor {
                         }
                         State::AwaitingSecondByte(firstbyte) => {
                             //Store the status into the return array now both bytes have arrived
-                            statuses[num_statuses] = match firstbyte {
-                                0x01 => Some(L3ChangerStatus::PoweringUp),
-                                0x02 => Some(L3ChangerStatus::PoweringDown),
-                                0x03 => Some(L3ChangerStatus::Ok),
-                                0x04 => Some(L3ChangerStatus::KeypadShifted),
-                                0x06 => Some(L3ChangerStatus::InhibitedByVmc),
-                                0x10 => {
-                                    if let Some(suberror) = GeneralErrorSubtype::n(*byte) {
-                                        Some(L3ChangerStatus::GeneralError(suberror))
-                                    } else {
-                                        defmt::debug!(
-                                            "Unrecognised general error subcode {=u8}",
-                                            *byte
-                                        );
-                                        Some(L3ChangerStatus::GeneralError(
-                                            GeneralErrorSubtype::NonSpecific,
-                                        ))
-                                    }
-                                }
-                                0x11 => {
-                                    if let Some(suberror) = DiscriminatorErrorSubtype::n(*byte) {
-                                        Some(L3ChangerStatus::DiscriminatorError(suberror))
-                                    } else {
-                                        defmt::debug!(
-                                            "Unrecognised discriminator error subcode {=u8}",
-                                            *byte
-                                        );
-                                        Some(L3ChangerStatus::DiscriminatorError(
-                                            DiscriminatorErrorSubtype::NonSpecific,
-                                        ))
-                                    }
-                                }
-                                0x12 => {
-                                    if let Some(suberror) = AcceptGateErrorSubtype::n(*byte) {
-                                        Some(L3ChangerStatus::AcceptGateError(suberror))
-                                    } else {
-                                        defmt::debug!(
-                                            "Unrecognised accept gate error subcode {=u8}",
-                                            *byte
-                                        );
-                                        Some(L3ChangerStatus::AcceptGateError(
-                                            AcceptGateErrorSubtype::NonSpecific,
-                                        ))
-                                    }
-                                }
-                                0x13 => {
-                                    if let Some(suberror) = SeparatorModuleErrorSubtype::n(*byte) {
-                                        Some(L3ChangerStatus::SeparatorError(suberror))
-                                    } else {
-                                        defmt::debug!(
-                                            "Unrecognised separator error subcode {=u8}",
-                                            *byte
-                                        );
-                                        Some(L3ChangerStatus::SeparatorError(
-                                            SeparatorModuleErrorSubtype::NonSpecific,
-                                        ))
-                                    }
-                                }
-                                0x14 => Some(L3ChangerStatus::DispenserError),
-                                0x15 => {
-                                    if let Some(suberror) = CoinCassetteErrorSubtype::n(*byte) {
-                                        Some(L3ChangerStatus::CoinCassetteError(suberror))
-                                    } else {
-                                        defmt::debug!(
-                                            "Unrecognised coin cassette error subcode {=u8}",
-                                            *byte
-                                        );
-                                        Some(L3ChangerStatus::CoinCassetteError(
-                                            CoinCassetteErrorSubtype::NonSpecific,
-                                        ))
-                                    }
-                                }
-                                _ => {
-                                    defmt::debug!(
-                                        "Unrecognised main error opcode {=u8}",
-                                        firstbyte
-                                    );
-                                    None
-                                }
-                            };
+                            statuses[num_statuses] = Some([firstbyte, *byte]);
                             num_statuses += 1;
                             //Reset the parser ready for the first byte of the next error code pair
                             parser_state = State::AwaitingFirstByte;
                         }
                     }
                 }
-            }
-            MDBResponse::StatusMsg(msg) => {
-                //Nothing to do - I don't think this is a valid response
+            },
+            _=> {
+                error!("Unexpected mdb response to L3 poll");
             }
         }
-
         statuses
     }
- */
-    }
+}
