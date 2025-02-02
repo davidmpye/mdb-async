@@ -3,13 +3,13 @@ use crate::MDBStatus;
 use crate::Mdb;
 
 use embedded_io_async::{Read, Write};
-use embassy_time::{Duration, Timer};
+use embassy_time::Timer;
 
+use core::str::from_utf8;
 
 use defmt::*;
 
-use enumn::N;
-
+use fixedstr::{str4, str16};
 //All coin acceptors should support these commands
 const RESET_CMD: u8 = 0x08;
 const SETUP_CMD: u8 = 0x09;
@@ -36,7 +36,6 @@ pub enum L3OptionalFeature {
     Ftl = 0x08,
 }
 
-#[derive(Format)]
 pub struct CoinAcceptor {
     pub feature_level: CoinAcceptorLevel,
     pub country_code: [u8; 2],
@@ -46,12 +45,11 @@ pub struct CoinAcceptor {
     pub l3_features: Option<CoinAcceptorL3Features>,
 }
 
-#[derive(Format)]
 pub struct CoinAcceptorL3Features {
-    pub manufacturer_code: [u8; 3],
-    pub serial_number: [u8; 12],
-    pub model: [u8; 12],
-    pub software_ver: [u8; 2],
+    pub manufacturer_code: str4,
+    pub serial_number: str16,
+    pub model: str16,
+    pub software_ver: str4,
 
     pub alt_payout_cmd_supported: bool,
     pub ext_diag_cmd_supported: bool,
@@ -182,11 +180,42 @@ impl CoinAcceptor {
                         );
                     } else {
                         let l3 = CoinAcceptorL3Features {
-                            manufacturer_code: buf[0..3].try_into().unwrap(),
-                            serial_number: buf[3..15].try_into().unwrap(),
-                            model: buf[15..27].try_into().unwrap(),
-                            software_ver: buf[27..29].try_into().unwrap(),
-
+                            manufacturer_code: {
+                                match from_utf8(&buf[0..3]) {
+                                    Ok(a) => str4::from(a),
+                                    Err(_) => {
+                                        error!("Non-ascii text in mfr code");
+                                        str4::from("")
+                                    }
+                                }
+                            },
+                            serial_number: {
+                                match from_utf8(&buf[3..15]) {
+                                    Ok(a) => str16::from(a),
+                                    Err(_) => {
+                                        error!("Non-ascii text in serial number");
+                                        str16::from("")
+                                    }                                
+                                }
+                            },
+                            model: {
+                                match from_utf8(&buf[15..27]) {
+                                    Ok(a) => str16::from(a),
+                                    Err(_) => {
+                                        error!("Non-ascii text in model number");
+                                        str16::from("")
+                                    }                                
+                                }
+                            },
+                            software_ver: {
+                                match from_utf8(&buf[27..29]) {
+                                    Ok(a) => str4::from(a),
+                                    Err(_) => {
+                                        error!("Non-ascii text in s/w ver");
+                                        str4::from("")
+                                    }                                
+                                }
+                            },
                             alt_payout_cmd_supported: {
                                 buf[32] & L3OptionalFeature::AltPayout as u8
                                     == L3OptionalFeature::AltPayout as u8
@@ -227,7 +256,7 @@ impl CoinAcceptor {
 
             defmt::debug!("Updating coin counts");
             //Now probe the coin counts and update the above statuses
-            coinacceptor.update_coin_counts(bus).await;
+            let _ =  coinacceptor.update_coin_counts(bus).await;
 
             return Some(coinacceptor);
         }
@@ -243,7 +272,7 @@ impl CoinAcceptor {
             error!("Tried to enable L3 features on non L3 coin acceptor");
             Err(())
         } else {
-            if bus.send_data_and_confirm_ack(
+            if bus.send_data_and_confirm_ack (
                 &[
                     L3_CMD_PREFIX,
                     L3_FEATURE_ENABLE_CMD,
@@ -293,25 +322,25 @@ impl CoinAcceptor {
         &mut self,
         bus: &mut Mdb<T>,
         coin_mask: u16,
-    ) -> bool {
+    ) -> Result<(), ()> {
         //Which coins you want to enable - NB We enable manual dispense for all coins automatically.
-        if (bus.send_data_and_confirm_ack(&[
+        if bus.send_data_and_confirm_ack(&[
             COIN_TYPE_CMD,
             (coin_mask & 0xFF) as u8,
             ((coin_mask >> 8) & 0xFF) as u8,
             0xFF,
             0xFF,
-        ]).await) {
+        ]).await {
             debug!("Coins enabled OK");
-            true
+            Ok(())
         }
         else {
             error!("Coins not enabled");
-            false
+            Err(())
         }
     }
-/* 
-    pub fn payout<T: embedded_io::Write + embedded_io::Read>(
+
+    pub async fn payout<T: embedded_io_async::Write + embedded_io_async::Read>(
         &mut self,
         bus: &mut Mdb<T>,
         credit: u16,
@@ -323,9 +352,9 @@ impl CoinAcceptor {
         };
 
         let amount_paid =  if use_l3_payout {
-            self.payout_level3(bus, credit)
+            self.payout_level3(bus, credit).await
         } else {
-            self.payout_level2(bus, credit)
+            self.payout_level2(bus, credit).await
         };
 
         if amount_paid == credit {
@@ -338,12 +367,12 @@ impl CoinAcceptor {
             );
         };
         //Update the coin coints
-        self.update_coin_counts(bus);
+        let _ = self.update_coin_counts(bus).await;
 
         amount_paid
     }
 
-    pub fn payout_level2<T: embedded_io::Write + embedded_io::Read>(
+    pub async fn payout_level2<T: embedded_io_async::Write + embedded_io_async::Read>(
         &mut self,
         bus: &mut Mdb<T>,
         credit: u16,
@@ -372,7 +401,7 @@ impl CoinAcceptor {
                         i,
                         coin.unscaled_value
                     );
-                    if (bus.send_data_and_confirm_ack(&[DISPENSE_CMD, b])) {
+                    if bus.send_data_and_confirm_ack(&[DISPENSE_CMD, b]).await {
                         defmt::debug!("Payout cmd acked - payout in progress");
                         amount_paid += coin.unscaled_value * num_to_pay as u16;
                         num_to_pay -= num_to_dispense;
@@ -388,7 +417,7 @@ impl CoinAcceptor {
         amount_paid
     }
 
-    pub fn payout_level3<T: embedded_io::Write + embedded_io::Read>(
+    pub async fn payout_level3<T: embedded_io_async::Write + embedded_io_async::Read>(
         &mut self,
         bus: &mut Mdb<T>,
         credit: u16,
@@ -399,30 +428,31 @@ impl CoinAcceptor {
             defmt::debug!("Payout value exceeds allowable limit");
             0
         } else {
-            bus.send_data_and_confirm_ack(&[L3_CMD_PREFIX, L3_PAYOUT_CMD, credit_scaled as u8]);
+            bus.send_data_and_confirm_ack(&[L3_CMD_PREFIX, L3_PAYOUT_CMD, credit_scaled as u8]).await;
 
             let mut buf: [u8; 16] = [0x00; 16];
             let mut complete: bool = false;
 
             while !complete {
-                bus.send_data(&[L3_CMD_PREFIX, L3_PAYOUT_VALUE_POLL_CMD]);
-                match bus.receive_response(&mut buf) {
-                    MDBResponse::Data(count) => {
+                bus.send_data(&[L3_CMD_PREFIX, L3_PAYOUT_VALUE_POLL_CMD]).await;
+                match bus.receive_response(&mut buf).await {
+                    Ok(MDBResponse::Data(_count)) => {
                         //This is the amount of credit paid out so far, not that interested for now
                     }
-                    MDBResponse::StatusMsg(x) => match x {
+                    Ok(MDBResponse::StatusMsg(x)) => match x {
                         MDBStatus::ACK => {
                             complete = true;
                         }
                         _ => {}
                     },
+                    _=>{}
                 }
             }
             let mut amount_paid: u16 = 0;
 
-            bus.send_data(&[L3_CMD_PREFIX, L3_PAYOUT_STATUS_CMD]);
-            match bus.receive_response(&mut buf) {
-                MDBResponse::Data(count) => {
+            bus.send_data(&[L3_CMD_PREFIX, L3_PAYOUT_STATUS_CMD]).await;
+            match bus.receive_response(&mut buf).await {
+                Ok(MDBResponse::Data(count)) => {
                     for (i, byte) in buf[0..count].iter().enumerate() {
                         self.coin_types[i].and_then(|ct| {
                             amount_paid += ct.unscaled_value * *byte as u16;
@@ -436,7 +466,7 @@ impl CoinAcceptor {
             amount_paid
         }
     }
-*/
+
     pub async fn poll<T:Write + Read>(
         &mut self,
         bus: &mut Mdb<T>,
@@ -583,6 +613,7 @@ impl CoinAcceptor {
                         State::AwaitingSecondByte(firstbyte) => {
                             //Store the status into the return array now both bytes have arrived
                             statuses[num_statuses] = Some([firstbyte, *byte]);
+                            debug!("Recorded status of {=u8:#x} {=u8:#x}", firstbyte, *byte);
                             num_statuses += 1;
                             //Reset the parser ready for the first byte of the next error code pair
                             parser_state = State::AwaitingFirstByte;

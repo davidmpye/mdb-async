@@ -6,6 +6,8 @@ use defmt::Format;
 use embedded_hal::delay::DelayNs;
 use enumn::N;
 
+use fixedstr::str16;
+
 const RESET: u8 = 0x10;
 
 const SETUP_PREFIX: u8 = 0x11;
