@@ -575,9 +575,11 @@ impl CoinAcceptor {
                    }   
                 }
             }
+            Ok(poll_results)
         }
-
-        poll_results
+        else {
+            Err(())
+        }
     }
 
     pub async fn l3_diagnostic_status<T: embedded_io_async::Write + embedded_io_async::Read>(
