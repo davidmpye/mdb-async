@@ -470,7 +470,7 @@ impl CoinAcceptor {
     pub async fn poll<T:Write + Read>(
         &mut self,
         bus: &mut Mdb<T>,
-    ) -> [Option<PollEvent>; 16] {
+    ) -> Result<[Option<PollEvent>; 16], ()> {
         //You might get up to 16 poll events and you should process them in order..
         let mut poll_results: [Option<PollEvent>; 16] = [None; 16];
         let mut result_count: usize = 0;
