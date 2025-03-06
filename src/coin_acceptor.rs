@@ -487,7 +487,7 @@ impl CoinAcceptor {
                 MDBResponse::StatusMsg(status) => { 
                     if matches!(status, MDBStatus::ACK) {
                         //nothing to report;
-                        return poll_results;
+                        return Ok(poll_results);
                     }
                 }
                 MDBResponse::Data(count) => {
