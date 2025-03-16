@@ -1,7 +1,6 @@
 #![no_std]
 pub mod coin_acceptor;
 
-use coin_acceptor::CoinAcceptor;
 use defmt::*;
 use embedded_io_async::{Read, Write};
 use embassy_time::{Duration, Timer};
@@ -32,11 +31,7 @@ pub struct Mdb<T: Write + Read> {
 
 impl<T: Read + Write> Mdb<T> {
     pub fn new(uart : T) -> Self {
-        Self { uart, coin_acceptor: None }
-    }
-
-    pub async fn init_peripherals(&mut self) {
-        self.coin_acceptor = CoinAcceptor::init(self).await;
+        Self { uart }
     }
 
     pub async fn send_status_message(&mut self, status: MDBStatus) {
