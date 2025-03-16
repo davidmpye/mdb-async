@@ -26,7 +26,6 @@ pub enum MDBResponse<T, U> {
 
 pub struct Mdb<T: Write + Read> {
     uart: T,
-    pub coin_acceptor: Option<CoinAcceptor>,
 }
 
 impl<T: Read + Write> Mdb<T> {
