@@ -2,11 +2,16 @@ use crate::MDBResponse;
 use crate::MDBStatus;
 use crate::Mdb;
 
+
+use embedded_io_async::{Read, Write};
+
 use defmt::Format;
-use embedded_hal::delay::DelayNs;
 use enumn::N;
 
 use fixedstr::str16;
+
+use embassy_time::Timer;
+
 
 const RESET: u8 = 0x10;
 
@@ -167,35 +172,31 @@ impl CashlessDevice {
         }
     }
 
-    pub fn init<T: embedded_io::Write + embedded_io::Read>(bus: &mut Mdb<T>) -> Option<Self> {
+    pub async fn init<T: Read + Write>(bus: &mut Mdb<T>) -> Option<Self> {
+        
         let mut buf: [u8; 64] = [0x00; 64];
 
         bus.send_data_and_confirm_ack(&[RESET]);
         bus.send_data(&[POLL_CMD]);
-        match bus.receive_response(&mut buf) {
-            MDBResponse::Data(x) => {
-                if buf[0] != POLL_REPLY_JUST_RESET {
-                    defmt::debug!("Unexpected reply from cashless device post reset");
-                    return None;
-                } else {
-                    defmt::debug!("Received JUST_RESET from cashless device post poll");
-                }
-            }
-            MDBResponse::StatusMsg(x) => {}
-        };
 
-        bus.send_data(&VMC_SETUP_DATA);
-        match bus.receive_response(&mut buf) {
-            MDBResponse::Data(len) => {
-                if len != 8 {
-                    defmt::error!("Cashless device incorrect setup length {}", len);
-                    return None;
-                }
+        if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await {
+            if buf[0] != POLL_REPLY_JUST_RESET {
+                defmt::debug!("Unexpected reply from cashless device post reset");
+                return None;
+            } else {
+                defmt::debug!("Received JUST_RESET from cashless device post poll");
             }
-            MDBResponse::StatusMsg(x) => {
-                defmt::error!("Cashless device failed to reply with setup data");
+        }
+        bus.send_data(&VMC_SETUP_DATA);        
+        if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await {
+            if len != 8 {
+                defmt::error!("Cashless device incorrect setup length {}", len);
                 return None;
             }
+        }
+        else {
+            defmt::error!("Cashless device failed to reply with setup data");
+            return None;
         }
 
         //The buffer will contain the setup data.
@@ -219,31 +220,28 @@ impl CashlessDevice {
         bus.send_data_and_confirm_ack(&VMC_MAX_MIN_PRICE_DATA);
 
         bus.send_data(&VMC_EXPANSION_REQUEST_ID_DATA); //as above
-        match bus.receive_response(&mut buf) {
-            MDBResponse::Data(len) => {
-                //34 bytes if level 3 (the VMC reports L3)
-                if matches!(feature_level, CashlessDeviceFeatureLevel::Level3) {
-                    if len != 34 {
-                        defmt::error!(
-                            "L3 cashless device replied with wrong length expansion data ( {} )",
-                            len
-                        );
-                        return None;
-                    }
-                } else if len != 30 {
-                    //30 bytes if level 1-2
+        if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await {
+            if matches!(feature_level, CashlessDeviceFeatureLevel::Level3) {
+                if len != 34 {
                     defmt::error!(
-                        "Non L3 cashless device replied with wrong length expansion data ( {} )",
+                        "L3 cashless device replied with wrong length expansion data ( {} )",
                         len
                     );
                     return None;
                 }
-            }
-            _ => {
-                defmt::error!("Cashless device failed to reply with expansion request data");
+            } else if len != 30 {
+                //30 bytes if level 1-2
+                defmt::error!(
+                    "Non L3 cashless device replied with wrong length expansion data ( {} )",
+                    len
+                );
                 return None;
             }
         }
+        else {
+            defmt::error!("Cashless device failed to reply with expansion request data");
+            return None;
+        };
 
         //Buffer will now contain correct length of data for parsing expansion request
         let c = CashlessDevice {
@@ -281,14 +279,12 @@ impl CashlessDevice {
         Some(c)
     }
 
-    pub fn record_cash_transaction<T: embedded_io::Write + embedded_io::Read>(
+    pub async fn record_cash_transaction<T: Read + Write>(
         &self,
         bus: &mut Mdb<T>,
         unscaled_amount: u16,
         address: [u8; 2],
     ) -> bool {
-        let mut buf: [u8; 64] = [0x00; 64];
-
         let amount = unscaled_amount.to_le_bytes();
         if bus.send_data_and_confirm_ack(&[
             VEND_PREFIX,
@@ -297,7 +293,7 @@ impl CashlessDevice {
             amount[0],
             address[0],
             address[1],
-        ]) {
+        ]).await {
             defmt::debug!("Record cash sale transaction success");
             true
         }
@@ -307,7 +303,7 @@ impl CashlessDevice {
         }
     }
 
-    pub fn start_transaction<T: embedded_io::Write + embedded_io::Read>(
+    pub async fn start_transaction<T: Read + Write>(
         &self,
         bus: &mut Mdb<T>,
         unscaled_amount: u16,
@@ -323,14 +319,14 @@ impl CashlessDevice {
             amount[0],
             address[0],
             address[1],
-        ]);
- 
+        ]).await;
+
         //Send poll command, and wait a max of 150 cycles (30 seconds) for someone to present a card
         let mut success = false;
         for i in 0..150 {
             bus.send_data(&[POLL_CMD]);
-            match bus.receive_response(&mut buf) {
-                MDBResponse::Data(len) => match buf[0] {
+            if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await  {
+                match buf[0] {
                     POLL_REPLY_VEND_APPROVED => {
                         let amount: u16 = (buf[1] as u16) << 8 | buf[2] as u16;
                         defmt::debug!("Card reader approved vend - up to  {}", amount);
@@ -351,10 +347,12 @@ impl CashlessDevice {
                             buf[0..len]
                         );
                     }
-                },
-                MDBResponse::StatusMsg(x) => {}
-            };
-            bus.timer.delay_ms(200);
+                }
+            }
+            else {
+                defmt::debug!("Unexpected non-response reply");
+            }
+          //  bus.timer.delay_ms(200);
         }
         if ! success {
             //need to end session if denied.
@@ -363,7 +361,7 @@ impl CashlessDevice {
         success
     }
 
-    pub fn cancel_transaction<T: embedded_io::Write + embedded_io::Read>(
+    pub async fn cancel_transaction<T: Read + Write>(
         &self,
         bus: &mut Mdb<T>
     ) -> bool {
@@ -372,46 +370,49 @@ impl CashlessDevice {
 
         let mut buf: [u8; 64] = [0x00; 64];
         bus.send_data(&[POLL_CMD]);
-        match bus.receive_response(&mut buf) {
-            MDBResponse::Data(len) => match buf[0] {
+        if let Ok(MDBResponse::Data(count)) = bus.receive_response(&mut buf).await {
+            match buf[0] {
                 POLL_REPLY_VEND_DENIED => {
                     let amount: u16 = (buf[1] as u16) << 8 | buf[2] as u16;
                     defmt::debug!("Transaction cancelled");
                     return true;
                 }
-                _=>{}
+                _ => {
+                    defmt::debug!("Unexpected reply");
+                }
             }
-            _=> {},
         }
+
         false
     }
 
-    pub fn vend_success<T: embedded_io::Write + embedded_io::Read>(
+    pub async fn vend_success<T: Read + Write>(
         &self,
         bus: &mut Mdb<T>, 
         address: [u8; 2]
     ) -> bool {
-        bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_SUCCESS, address[0],address[1]])
+        bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_SUCCESS, address[0],address[1]]).await
     }
 
 
-    pub fn vend_failed<T: embedded_io::Write + embedded_io::Read>(
+    pub async fn vend_failed<T: Read + Write>(
         &self,
         bus: &mut Mdb<T>
     ) -> bool {
         bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_FAILURE]);
         //poll should get 0x06 -vend denied.
         //then we move to end session.
-        let mut buf: [u8; 64] = [0x00; 64];
         bus.send_data(&[POLL_CMD]);
 
         let mut refund_complete = false;
+
+        //fixme
         for i in 0..100 {
-            if bus.send_data_and_confirm_ack(&[POLL_CMD]) {
+            if bus.send_data_and_confirm_ack(&[POLL_CMD]).await {
                 refund_complete = true;
                 break;
             }
-            bus.timer.delay_ms(100);
+            Timer::after_millis(100).await;
         }
         
         if refund_complete {
@@ -424,41 +425,40 @@ impl CashlessDevice {
         }
     }
     
-    pub fn end_session<T: embedded_io::Write + embedded_io::Read>(
+    pub async fn end_session<T: Read + Write>(
         &self,
         bus: &mut Mdb<T>
     ) -> bool {
         let mut buf: [u8; 64] = [0x00; 64];
         bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_SESSION_COMPLETE]);
         bus.send_data(&[POLL_CMD]);
-        match bus.receive_response(&mut buf) {
-            MDBResponse::Data(len) => match buf[0] {
+        if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await {
+            match buf[0] {
                 POLL_REPLY_END_SESSION => {
                     defmt::debug!("End session");
                     return true;
-                }
+                },
                 _ => {
                     defmt::error!(
                         "Unexpected reply from card reader to end session: {=[u8]:#04x}",
                         buf[0..len]
                     );
                 }
-            },
-            MDBResponse::StatusMsg(x) => {}
+            }
         };
         defmt::error!("end session failed!");
         return false;
     }
 
-    pub fn set_device_enabled<T: embedded_io::Write + embedded_io::Read>(
+    pub async fn set_device_enabled<T: Read + Write>(
         &self,
         bus: &mut Mdb<T>,
         enable: bool,
     ) -> bool {
         if enable {
-            bus.send_data_and_confirm_ack(&[VEND_READER_PREFIX, VEND_READER_ENABLE])
+            bus.send_data_and_confirm_ack(&[VEND_READER_PREFIX, VEND_READER_ENABLE]).await
         } else {
-            bus.send_data_and_confirm_ack(&[VEND_READER_PREFIX, VEND_READER_DISABLE])
+            bus.send_data_and_confirm_ack(&[VEND_READER_PREFIX, VEND_READER_DISABLE]).await
         }
     }
 }
