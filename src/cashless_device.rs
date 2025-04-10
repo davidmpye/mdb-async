@@ -176,8 +176,8 @@ impl CashlessDevice {
         
         let mut buf: [u8; 64] = [0x00; 64];
 
-        bus.send_data_and_confirm_ack(&[RESET]);
-        bus.send_data(&[POLL_CMD]);
+        bus.send_data_and_confirm_ack(&[RESET]).await;
+        bus.send_data(&[POLL_CMD]).await;
 
         if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await {
             if buf[0] != POLL_REPLY_JUST_RESET {
@@ -187,7 +187,7 @@ impl CashlessDevice {
                 defmt::debug!("Received JUST_RESET from cashless device post poll");
             }
         }
-        bus.send_data(&VMC_SETUP_DATA);        
+        bus.send_data(&VMC_SETUP_DATA).await;   
         if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await {
             if len != 8 {
                 defmt::error!("Cashless device incorrect setup length {}", len);
@@ -217,9 +217,9 @@ impl CashlessDevice {
         let supports_cash_sale_cmd = buf[0x07] & 0x08 != 0;
 
         //Min max price data next
-        bus.send_data_and_confirm_ack(&VMC_MAX_MIN_PRICE_DATA);
+        bus.send_data_and_confirm_ack(&VMC_MAX_MIN_PRICE_DATA).await;
 
-        bus.send_data(&VMC_EXPANSION_REQUEST_ID_DATA); //as above
+        bus.send_data(&VMC_EXPANSION_REQUEST_ID_DATA).await;; //as above
         if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await {
             if matches!(feature_level, CashlessDeviceFeatureLevel::Level3) {
                 if len != 34 {
@@ -272,9 +272,9 @@ impl CashlessDevice {
             supports_always_idle: buf[33] & 0x20 != 0,
         };
         //Enable always idle
-        bus.send_data_and_confirm_ack(&[0x17, 0x04, 0x00, 0x00, 0x00, 0x20]);
+        bus.send_data_and_confirm_ack(&[0x17, 0x04, 0x00, 0x00, 0x00, 0x20]).await;
 
-        c.set_device_enabled(bus, true);
+        c.set_device_enabled(bus, true).await;
 
         Some(c)
     }
@@ -324,7 +324,7 @@ impl CashlessDevice {
         //Send poll command, and wait a max of 150 cycles (30 seconds) for someone to present a card
         let mut success = false;
         for i in 0..150 {
-            bus.send_data(&[POLL_CMD]);
+            bus.send_data(&[POLL_CMD]).await;
             if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await  {
                 match buf[0] {
                     POLL_REPLY_VEND_APPROVED => {
@@ -356,7 +356,7 @@ impl CashlessDevice {
         }
         if ! success {
             //need to end session if denied.
-            self.end_session(bus);
+            self.end_session(bus).await;
         }
         success
     }
@@ -365,15 +365,15 @@ impl CashlessDevice {
         &self,
         bus: &mut Mdb<T>
     ) -> bool {
-        bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_CANCEL]);
+        bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_CANCEL]).await;
 
 
         let mut buf: [u8; 64] = [0x00; 64];
-        bus.send_data(&[POLL_CMD]);
+        bus.send_data(&[POLL_CMD]).await;
         if let Ok(MDBResponse::Data(count)) = bus.receive_response(&mut buf).await {
             match buf[0] {
                 POLL_REPLY_VEND_DENIED => {
-                    let amount: u16 = (buf[1] as u16) << 8 | buf[2] as u16;
+          //          let amount: u16 = (buf[1] as u16) << 8 | buf[2] as u16;
                     defmt::debug!("Transaction cancelled");
                     return true;
                 }
@@ -399,10 +399,10 @@ impl CashlessDevice {
         &self,
         bus: &mut Mdb<T>
     ) -> bool {
-        bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_FAILURE]);
+        bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_FAILURE]).await;
         //poll should get 0x06 -vend denied.
         //then we move to end session.
-        bus.send_data(&[POLL_CMD]);
+        bus.send_data(&[POLL_CMD]).await;
 
         let mut refund_complete = false;
 
@@ -430,8 +430,8 @@ impl CashlessDevice {
         bus: &mut Mdb<T>
     ) -> bool {
         let mut buf: [u8; 64] = [0x00; 64];
-        bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_SESSION_COMPLETE]);
-        bus.send_data(&[POLL_CMD]);
+        bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_SESSION_COMPLETE]).await;
+        bus.send_data(&[POLL_CMD]).await;
         if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await {
             match buf[0] {
                 POLL_REPLY_END_SESSION => {
