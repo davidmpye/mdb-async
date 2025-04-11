@@ -124,6 +124,12 @@ pub struct CashlessDevice {
     pub supports_negative_vend: bool,
     pub supports_data_entry: bool,
     pub supports_always_idle: bool,
+    //2019 added new l3 features
+    pub supports_remote_vend: bool,
+    pub supports_basket: bool,
+    pub supports_coupon: bool,
+    pub supports_ask_begin_session: bool,
+    pub supports_enhanced_item_number_information: bool,
 }
 
 impl CashlessDevice {
@@ -172,8 +178,7 @@ impl CashlessDevice {
         }
     }
 
-    pub async fn init<T: Read + Write>(bus: &mut Mdb<T>) -> Option<Self> {
-        
+    pub async fn init<T: Read + Write>(bus: &mut Mdb<T>) -> Option<Self> {    
         let mut buf: [u8; 64] = [0x00; 64];
 
         bus.send_data_and_confirm_ack(&[RESET]).await;
@@ -270,6 +275,13 @@ impl CashlessDevice {
             supports_negative_vend: buf[33] & 0x08 != 0,
             supports_data_entry: buf[33] & 0x10 != 0,
             supports_always_idle: buf[33] & 0x20 != 0,
+
+            //Newly added L3 features in 2019 spec
+            supports_remote_vend: buf[33] & 0x40 != 0,
+            supports_basket: buf[33] & 0x80 != 0,
+            supports_coupon: buf[32] & 0x01 != 0,
+            supports_ask_begin_session: buf[32] & 0x02 != 0,
+            supports_enhanced_item_number_information: buf[32] & 0x04 != 0,
         };
         //Enable always idle
         bus.send_data_and_confirm_ack(&[0x17, 0x04, 0x00, 0x00, 0x00, 0x20]).await;
