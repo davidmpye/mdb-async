@@ -364,7 +364,7 @@ impl CashlessDevice {
             else {
                 defmt::debug!("Unexpected non-response reply");
             }
-          //  bus.timer.delay_ms(200);
+            Timer::after_millis(200).await;
         }
         if ! success {
             //need to end session if denied.
