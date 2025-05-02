@@ -473,4 +473,21 @@ impl CashlessDevice {
             bus.send_data_and_confirm_ack(&[VEND_READER_PREFIX, VEND_READER_DISABLE]).await
         }
     }
+
+    pub async fn poll_heartbeat<T: Read + Write>(
+        &self,
+        bus: &mut Mdb<T>
+    ) -> bool {
+        //This function is naaasty, as it should actually do something with the poll response....
+        //We are only using it because if we don't poll the cashless device, it will keep rebooting
+        let mut buf: [u8; 64] = [0x00; 64];
+
+        bus.send_data(&[POLL_CMD]).await;
+        if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await {
+            true
+        }
+        else {
+            false
+        }
+    }
 }
