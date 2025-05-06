@@ -285,7 +285,14 @@ impl CashlessDevice {
             supports_enhanced_item_number_information: buf[32] & 0x04 != 0,
         };
         //Enable always idle
-        bus.send_data_and_confirm_ack(&[0x17, 0x04, 0x00, 0x00, 0x00, 0x20]).await;
+        match bus.send_data_and_confirm_ack(&[0x17, 0x04, 0x00, 0x00, 0x00, 0x20]).await {
+            true => {
+                debug!("Option feature enable command ACKd")
+            },
+            false => {
+                error!("Option feature enable command NAK");
+            },
+        }
 
         c.set_device_enabled(bus, true).await;
 
@@ -426,7 +433,6 @@ impl CashlessDevice {
         bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_SUCCESS, address[0],address[1]]).await
     }
 
-
     pub async fn vend_failed<T: Read + Write>(
         &self,
         bus: &mut Mdb<T>
@@ -504,6 +510,9 @@ impl CashlessDevice {
 
         bus.send_data(&[POLL_CMD]).await;
         if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await {
+            if len != 0 {
+                debug!("Got non zero poll reply in heartbeat - we have missed an event");
+            }
             true
         }
         else {
