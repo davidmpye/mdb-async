@@ -5,7 +5,8 @@ use crate::Mdb;
 
 use embedded_io_async::{Read, Write};
 
-use defmt::Format;
+use defmt::*;
+
 use enumn::N;
 
 use fixedstr::str16;
@@ -172,7 +173,7 @@ impl CashlessDevice {
             POLL_REPLY_TIME_DATE_REQUEST => 1,
             POLL_REPLY_DATA_ENTRY_REQUEST => 2,
             _ => {
-                defmt::debug!("Got asked for length of unknown poll cmd {=u8}", poll_cmd);
+                debug!("Got asked for length of unknown poll cmd {=u8}", poll_cmd);
                 1
             } //Shouldn't happen
         }
@@ -186,21 +187,21 @@ impl CashlessDevice {
 
         if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await {
             if buf[0] != POLL_REPLY_JUST_RESET {
-                defmt::debug!("Unexpected reply from cashless device post reset");
+                debug!("Unexpected reply from cashless device post reset");
                 return None;
             } else {
-                defmt::debug!("Received JUST_RESET from cashless device post poll");
+                debug!("Received JUST_RESET from cashless device post poll");
             }
         }
         bus.send_data(&VMC_SETUP_DATA).await;   
         if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await {
             if len != 8 {
-                defmt::error!("Cashless device incorrect setup length {}", len);
+                error!("Cashless device incorrect setup length {}", len);
                 return None;
             }
         }
         else {
-            defmt::error!("Cashless device failed to reply with setup data");
+            error!("Cashless device failed to reply with setup data");
             return None;
         }
 
@@ -228,7 +229,7 @@ impl CashlessDevice {
         if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await {
             if matches!(feature_level, CashlessDeviceFeatureLevel::Level3) {
                 if len != 34 {
-                    defmt::error!(
+                    error!(
                         "L3 cashless device replied with wrong length expansion data ( {} )",
                         len
                     );
@@ -236,7 +237,7 @@ impl CashlessDevice {
                 }
             } else if len != 30 {
                 //30 bytes if level 1-2
-                defmt::error!(
+                error!(
                     "Non L3 cashless device replied with wrong length expansion data ( {} )",
                     len
                 );
@@ -244,7 +245,7 @@ impl CashlessDevice {
             }
         }
         else {
-            defmt::error!("Cashless device failed to reply with expansion request data");
+            error!("Cashless device failed to reply with expansion request data");
             return None;
         };
 
@@ -306,11 +307,11 @@ impl CashlessDevice {
             address[0],
             address[1],
         ]).await {
-            defmt::debug!("Record cash sale transaction success");
+            debug!("Record cash sale transaction success");
             true
         }
         else {
-            defmt::debug!("Recorded cash sale transaction fail");
+            debug!("Recorded cash sale transaction fail");
             false
         }
     }
@@ -321,49 +322,69 @@ impl CashlessDevice {
         unscaled_amount: u16,
         address: [u8; 2],
     ) -> bool {
-        let mut buf: [u8; 64] = [0x00; 64];
-
         let amount = unscaled_amount.to_le_bytes();
-        bus.send_data_and_confirm_ack(&[
+        match bus.send_data_and_confirm_ack(&[
             VEND_PREFIX,
             VEND_REQUEST,
             amount[1],
             amount[0],
             address[0],
             address[1],
-        ]).await;
+        ]).await {
+            true => {  
+                debug!("Cashless device ACK start transaction");
+            },
+            false => {
+                error!("Cashless device did not ACK start transaction");
+                return false;
+            },
+        }
 
         //Send poll command, and wait a max of 150 cycles (30 seconds) for someone to present a card
+        let mut buf: [u8; 64] = [0x00; 64];
         let mut success = false;
         for i in 0..150 {
+            //Poll reader
             bus.send_data(&[POLL_CMD]).await;
-            if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await  {
-                match buf[0] {
-                    POLL_REPLY_VEND_APPROVED => {
-                        let amount: u16 = (buf[1] as u16) << 8 | buf[2] as u16;
-                        defmt::debug!("Card reader approved vend - up to  {}", amount);
-                        success = true;
-                        break;
-                    }
-                    POLL_REPLY_VEND_DENIED => {
-                        defmt::debug!("Card reader denied vend");
-                        break;
-                    }
-                    POLL_REPLY_SESSION_CANCEL_REQUEST => {
-                        defmt::debug!("Card reader requested end of session");
-                        break;
-                    }
-                    _ => {
-                        defmt::debug!(
-                            "Unexpected reply from card reader to vend request: {=[u8]:#04x}",
-                            buf[0..len]
-                        );
+
+            match bus.receive_response(&mut buf).await {
+                Ok(MDBResponse::Data(len)) => {
+                    match buf[0] {
+                        POLL_REPLY_VEND_APPROVED => {
+                            let amount: u16 = (buf[1] as u16) << 8 | buf[2] as u16;
+                            debug!("Card reader approved vend - up to  {}", amount);
+                            success = true;
+                            break;
+                        }
+                        POLL_REPLY_VEND_DENIED => {
+                            debug!("Card reader denied vend");
+                            break;
+                        }
+                        POLL_REPLY_SESSION_CANCEL_REQUEST => {
+                            debug!("Card reader requested end of session");
+                            break;
+                        }
+                        _ => {
+                            debug!(
+                                "Unexpected reply from card reader to vend request: {=[u8]:#04x}",
+                                buf[0..len]
+                            );
+                        }
                     }
                 }
-            }
-            else {
-                defmt::debug!("Unexpected non-response reply");
-            }
+                Ok(MDBResponse::StatusMsg(msg)) => {
+                    match msg {
+                        MDBStatus::ACK => {
+                            debug!("Start transaction poll ACK");
+                        },
+                        MDBStatus::NAK => {
+                            debug!("Start transaction poll NAK");
+                        },
+                        _ => {},
+                    }
+                },
+                _ => {},
+            }            
             Timer::after_millis(200).await;
         }
         if ! success {
@@ -385,12 +406,11 @@ impl CashlessDevice {
         if let Ok(MDBResponse::Data(count)) = bus.receive_response(&mut buf).await {
             match buf[0] {
                 POLL_REPLY_VEND_DENIED => {
-          //          let amount: u16 = (buf[1] as u16) << 8 | buf[2] as u16;
-                    defmt::debug!("Transaction cancelled");
+                    debug!("Vend cancelled");
                     return true;
                 }
                 _ => {
-                    defmt::debug!("Unexpected reply");
+                    debug!("Unexpected reply");
                 }
             }
         }
@@ -428,11 +448,11 @@ impl CashlessDevice {
         }
         
         if refund_complete {
-            defmt::debug!("Refund complete");
+            debug!("Refund complete");
             true
         }
         else {
-            defmt::debug!("Refund FAILED - credit lost");
+            debug!("Refund FAILED - credit lost");
             false
         }
     }
@@ -447,18 +467,18 @@ impl CashlessDevice {
         if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await {
             match buf[0] {
                 POLL_REPLY_END_SESSION => {
-                    defmt::debug!("End session");
+                    debug!("End session");
                     return true;
                 },
                 _ => {
-                    defmt::error!(
+                    error!(
                         "Unexpected reply from card reader to end session: {=[u8]:#04x}",
                         buf[0..len]
                     );
                 }
             }
         };
-        defmt::error!("end session failed!");
+        error!("end session failed!");
         return false;
     }
 
