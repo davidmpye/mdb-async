@@ -392,7 +392,7 @@ impl CashlessDevice {
                 },
                 _ => {},
             }            
-            Timer::after_millis(200).await;
+            Timer::after_millis(100).await;
         }
         if ! success {
             //need to end session if denied.
