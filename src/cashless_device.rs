@@ -356,6 +356,7 @@ impl CashlessDevice {
 
             match bus.receive_response(&mut buf).await {
                 Ok(MDBResponse::Data(len)) => {
+                    debug!("Message {=[u8]:#04x}", buf[0..len]);
                     match buf[0] {
                         POLL_REPLY_VEND_APPROVED => {
                             let amount: u16 = (buf[1] as u16) << 8 | buf[2] as u16;
@@ -392,7 +393,7 @@ impl CashlessDevice {
                 },
                 _ => {},
             }            
-            Timer::after_millis(100).await;
+            Timer::after_millis(50).await;
         }
         if ! success {
             //need to end session if denied.
