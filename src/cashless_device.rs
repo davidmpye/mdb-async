@@ -2,17 +2,12 @@ use crate::MDBResponse;
 use crate::MDBStatus;
 use crate::Mdb;
 
-
 use embedded_io_async::{Read, Write};
 
 use defmt::*;
 
-use enumn::N;
-
-use fixedstr::str16;
-
-use embassy_time::Timer;
-
+use core::str::from_utf8;
+use fixedstr::{str16, str4};
 
 const RESET: u8 = 0x10;
 
@@ -80,6 +75,8 @@ const VEND_REPLY_REVALUE_LIMIT_AMOUNT: u8 = 0x0F;
 //Some multi byte pre-written message to send to device
 //Breakdown - VMC level 3, display with no rows, no columns (none which we will
 //share with the contactless device, anyway!)
+//NB infuriatingly, the number of rows and columns we specify *changes* the length of the data
+//in one of the poll replies (0x02 - "Display Request" - where the number of bytes must equal rows*cols!)
 const VMC_SETUP_DATA: [u8; 6] = [0x11, 0x00, 0x03, 0x00, 0x00, 0x00];
 
 //Max and min prices set as "dont know"
@@ -93,6 +90,9 @@ const VMC_EXPANSION_REQUEST_ID_DATA: [u8; 31] = [
     b'0', b'1', //Software version
 ];
 
+//This enables the 'always idle' feature only
+const FEATURE_FLAG_DATA: [u8; 6] = [0x17, 0x04, 0x00, 0x00, 0x00, 0x20];
+
 #[derive(Format)]
 pub enum CashlessDeviceFeatureLevel {
     Level1,
@@ -100,7 +100,135 @@ pub enum CashlessDeviceFeatureLevel {
     Level3,
 }
 
-#[derive(Format)]
+#[derive(Copy, Clone)]
+pub struct BeginSessionAdvancedData {
+    funds_available: u16,
+    payment_media_id: u32,
+    payment_type: u8,
+    payment_data: u16,
+}
+
+#[derive(Copy, Clone)]
+pub enum MalfunctionCode {
+    PaymentMedia,
+    InvalidPaymentMedia,
+    Tamper,
+    MfrErr1,
+    CommsErr2,
+    RequiresService,
+    MfrErr2,
+    ReaderFailure3,
+    CommsErr3,
+    Jammed,
+    MfrErr,
+    RefundErr,
+    Unassigned,
+}
+
+//A poll event might be one of the following:
+#[derive(Copy, Clone)]
+pub enum PollEvent {
+    JustReset,
+    ReaderConfigData,
+    BeginSessionLevelBasic(u16), //'scaled' funds
+    BeginSessionLevelAdvanced(BeginSessionAdvancedData),
+    SessionCancelRequest,
+    VendApproved(u16), //unscaled amount
+    VendDenied,
+    EndSession,
+    Cancelled,
+    PeripheralId, //We are a level 3 VMC, so we will parse...
+    Malfunction(MalfunctionCode),
+    CmdOutOfSequence, //If VMC level 3, then there'll be an optional status byte here
+    RevalueApproved,
+    RevalueDenied,
+    RevalueLimitAmount(u16),
+    UserFileData,
+    TimeDateRequest,
+    DataEntryRequest,
+    //Unimplemented:
+    //DisplayRequest - we don't have a display
+    //UserFileData (obsolete)
+    //TimeDateRequest
+    //?  SelectionRequest,
+    //?  CouponReport,
+}
+
+pub enum PollError {
+    InvalidEvent,
+    UnsupportedEvent,
+}
+
+impl TryFrom<&[u8]> for PollEvent {
+    type Error = PollError;
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        match bytes[0] {
+            POLL_REPLY_JUST_RESET => Ok(PollEvent::JustReset),
+            POLL_REPLY_READER_CONFIG_DATA => Ok(PollEvent::ReaderConfigData),
+            POLL_REPLY_DISPLAY_REQUEST => Err(PollError::UnsupportedEvent),
+            POLL_REPLY_BEGIN_SESSION => {
+                match bytes.len() {
+                    3 => {
+                        //Level 1 reader
+                        Ok(PollEvent::BeginSessionLevelBasic(u16::from_le_bytes(bytes[1..3].try_into().unwrap())))
+                    }
+                    10 => {
+                        //Level 2/3 reader
+                        Ok(PollEvent::BeginSessionLevelAdvanced(
+                            BeginSessionAdvancedData { 
+                                funds_available: u16::from_le_bytes(bytes[1..3].try_into().unwrap()),
+                                payment_media_id: u32::from_le_bytes(bytes[3..7].try_into().unwrap()),
+                                payment_type: bytes[7],
+                                payment_data: u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
+                            }
+                        ))
+                    }
+                    _ => {
+                        //Unrecognised length
+                        Err(PollError::InvalidEvent)
+                    },
+                }
+            }
+            POLL_REPLY_SESSION_CANCEL_REQUEST => Ok(PollEvent::SessionCancelRequest),
+            POLL_REPLY_VEND_APPROVED => match bytes.len() {
+                3 => Ok(PollEvent::VendApproved(u16::from_le_bytes(bytes[1..3].try_into().unwrap()))),
+                _ => Err(PollError::InvalidEvent)
+            }
+            POLL_REPLY_VEND_DENIED => Ok(PollEvent::VendDenied),
+            POLL_REPLY_END_SESSION => Ok(PollEvent::EndSession),
+            POLL_REPLY_CANCELLED => Ok(PollEvent::Cancelled),
+            POLL_REPLY_PERIPHERAL_ID => Ok(PollEvent::PeripheralId),
+            POLL_REPLY_MALFUNCTION => {
+                match bytes.len() {
+                    2 => match bytes[1]  {
+                        0x00 => Ok(PollEvent::Malfunction(MalfunctionCode::PaymentMedia)),
+                        0x01 => Ok(PollEvent::Malfunction(MalfunctionCode::InvalidPaymentMedia)),
+                        0x02 => Ok(PollEvent::Malfunction(MalfunctionCode::Tamper)),
+                        0x03 => Ok(PollEvent::Malfunction(MalfunctionCode::MfrErr1)),
+                        0x04 => Ok(PollEvent::Malfunction(MalfunctionCode::CommsErr2)),
+                        0x05 => Ok(PollEvent::Malfunction(MalfunctionCode::RequiresService)),
+                        //0x06 is 'unassigned 2' ¯\_(ツ)_/¯ 
+                        0x07 => Ok(PollEvent::Malfunction(MalfunctionCode::MfrErr2)),
+                        0x08 => Ok(PollEvent::Malfunction(MalfunctionCode::ReaderFailure3)),
+                        0x09 => Ok(PollEvent::Malfunction(MalfunctionCode::CommsErr3)),
+                        0x0A => Ok(PollEvent::Malfunction(MalfunctionCode::Jammed)),
+                        0x0B => Ok(PollEvent::Malfunction(MalfunctionCode::MfrErr)),
+                        0x0C => Ok(PollEvent::Malfunction(MalfunctionCode::RefundErr)),
+                        _ => Ok(PollEvent::Malfunction(MalfunctionCode::Unassigned)),
+                    },
+                    _ => Err(PollError::InvalidEvent)
+                }
+            },
+            POLL_REPLY_OUT_OF_SEQUENCE => Ok(PollEvent::CmdOutOfSequence),
+            POLL_REPLY_REVALUE_APPROVED => Ok(PollEvent::RevalueApproved),
+            POLL_REPLY_USER_FILE_DATA => Ok(PollEvent::UserFileData),
+            POLL_REPLY_TIME_DATE_REQUEST => Ok(PollEvent::TimeDateRequest),
+            POLL_REPLY_DATA_ENTRY_REQUEST => Ok(PollEvent::DataEntryRequest),
+            _ => Err(PollError::InvalidEvent),
+        }
+    }
+}
+
 pub struct CashlessDevice {
     pub feature_level: CashlessDeviceFeatureLevel,
     pub country_code: u16,
@@ -113,10 +241,10 @@ pub struct CashlessDevice {
     pub supports_cash_sale_cmd: bool,
 
     //These come back from the peripheral ID command (0x09)
-    pub manufacturer_code: [u8; 3],
-    pub serial_number: [u8; 12],
-    pub model_number: [u8; 12],
-    pub software_version: [u8; 2],
+    pub manufacturer_code: str4,
+    pub serial_number: str16,
+    pub model_number: str16,
+    pub software_version: str4,
 
     //Level 3 features
     pub supports_ftl: bool,
@@ -137,75 +265,92 @@ impl CashlessDevice {
     /// Given the first byte of the poll command, this function will
     /// return its' length.  Needed in order to tokenize multiple
     /// responses to a poll command when they are chained into a single message
-    pub fn poll_response_length(&self, poll_cmd: u8) -> usize {
+    pub fn poll_response_length(&self, poll_cmd: u8) -> Result<usize, ()> {
         match poll_cmd {
-            POLL_REPLY_JUST_RESET => 1,
-            POLL_REPLY_READER_CONFIG_DATA => 8,
-            POLL_REPLY_DISPLAY_REQUEST => 34,
+            POLL_REPLY_JUST_RESET => Ok(1),
+            POLL_REPLY_READER_CONFIG_DATA => Ok(8),
+            POLL_REPLY_DISPLAY_REQUEST => Ok(2), //NB If you implement a reader with rows/cols, then the
+            //number of bytes here are rows*cols.  We don't have any rows/cols, so we shouldnt
+            //ever receive this message....
             POLL_REPLY_BEGIN_SESSION => {
                 match self.feature_level {
-                    CashlessDeviceFeatureLevel::Level1 => 3,
-                    _ => 10,
+                    CashlessDeviceFeatureLevel::Level1 => Ok(3),
+                    _ => Ok(10),
                     //Would be 17 if expanded currency mode enabled, but not supported currently
                 }
             }
-            POLL_REPLY_SESSION_CANCEL_REQUEST => 1,
-            POLL_REPLY_VEND_APPROVED => 3, //NB would be 5 if expanded currency mode is enabled
-            POLL_REPLY_VEND_DENIED => 1,
-            POLL_REPLY_END_SESSION => 1,
-            POLL_REPLY_CANCELLED => 1,
+            POLL_REPLY_SESSION_CANCEL_REQUEST => Ok(1),
+            POLL_REPLY_VEND_APPROVED => Ok(3), //NB would be 5 if expanded currency mode is enabled
+            POLL_REPLY_VEND_DENIED => Ok(1),
+            POLL_REPLY_END_SESSION => Ok(1),
+            POLL_REPLY_CANCELLED => Ok(1),
             POLL_REPLY_PERIPHERAL_ID => {
                 match self.feature_level {
                     //Because the library identifies as L3 VMC, the L3 device will give us the option bits
                     //making its' reply 34 bytes long
-                    CashlessDeviceFeatureLevel::Level3 => 34,
-                    _ => 30,
+                    CashlessDeviceFeatureLevel::Level3 => Ok(34),
+                    _ => Ok(30),
                 }
             }
-            POLL_REPLY_MALFUNCTION => 2,
+            POLL_REPLY_MALFUNCTION => Ok(2),
             POLL_REPLY_OUT_OF_SEQUENCE => match self.feature_level {
-                CashlessDeviceFeatureLevel::Level1 => 1,
-                _ => 2,
+                CashlessDeviceFeatureLevel::Level1 => Ok(1),
+                _ => Ok(2),
             },
-            POLL_REPLY_REVALUE_APPROVED => 1,
-            POLL_REPLY_REVALUE_DENIED => 1,
-            POLL_REPLY_REVALUE_LIMIT_AMOUNT => 3,
-            POLL_REPLY_TIME_DATE_REQUEST => 1,
-            POLL_REPLY_DATA_ENTRY_REQUEST => 2,
+            POLL_REPLY_REVALUE_APPROVED => Ok(1),
+            POLL_REPLY_REVALUE_DENIED => Ok(1),
+            POLL_REPLY_REVALUE_LIMIT_AMOUNT => Ok(3),
+            POLL_REPLY_TIME_DATE_REQUEST => Ok(1),
+            POLL_REPLY_DATA_ENTRY_REQUEST => Ok(2),
             _ => {
-                debug!("Got asked for length of unknown poll cmd {=u8}", poll_cmd);
-                1
-            } //Shouldn't happen
+                debug!("Invalid poll event byte {=u8}", poll_cmd);
+                Err(())
+            }
         }
     }
 
-    pub async fn init<T: Read + Write>(bus: &mut Mdb<T>) -> Option<Self> {    
-        let mut buf: [u8; 64] = [0x00; 64];
+    pub async fn init<T: Read + Write>(bus: &mut Mdb<T>) -> Option<Self> {
+        //MDB spec insists on following init sequence for cashless devices:
+        //Reset
+        //Poll - should reply POLL_REPLY_JUST_RESET
+        //Setup config data
+        //Setup max/min price
+        //Expansion request ID
+        //Expansion enable options
+        //Setup max/min price again *IF* you've enabled 32 bit/multicurrency options
+        //Reader enable (if wished)
 
+        //We do the initial poll and parse in here rather than use the main poll function, as until
+        //we know the level of device we are talking to, we can't tell how long the poll subcommands are.
+
+        //Start with initial reset
         bus.send_data_and_confirm_ack(&[RESET]).await;
-        bus.send_data(&[POLL_CMD]).await;
 
+        //Initial poll, should reply JUST RESET
+        bus.send_data(&[POLL_CMD]).await;
+        let mut buf: [u8; 64] = [0x00; 64];
         if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await {
             if buf[0] != POLL_REPLY_JUST_RESET {
-                debug!("Unexpected reply from cashless device post reset");
+                error!("Unexpected reply from cashless device post reset");
                 return None;
             } else {
                 debug!("Received JUST_RESET from cashless device post poll");
             }
         }
-        bus.send_data(&VMC_SETUP_DATA).await;   
+
+        //VMC/device config data exchange
+        bus.send_data(&VMC_SETUP_DATA).await;
         if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await {
             if len != 8 {
                 error!("Cashless device incorrect setup length {}", len);
                 return None;
             }
-        }
-        else {
+        } else {
             error!("Cashless device failed to reply with setup data");
             return None;
         }
 
-        //The buffer will contain the setup data.
+        //Parse the setup data from buffer
         let feature_level = match buf[0x01] {
             0x02 => CashlessDeviceFeatureLevel::Level2,
             0x03 => CashlessDeviceFeatureLevel::Level3,
@@ -222,10 +367,28 @@ impl CashlessDevice {
         let has_display = buf[0x07] & 0x04 != 0;
         let supports_cash_sale_cmd = buf[0x07] & 0x08 != 0;
 
-        //Min max price data next
+
+        //L3 features (only if we are a l3 reader)
+        let supports_ftl;
+        let monetary_format_32_bit;
+        let supports_multicurrency; 
+        let supports_negative_vend; 
+        let supports_data_entry;
+        let supports_always_idle;
+
+        //Newly added L3 features in 2019 spec
+        let supports_remote_vend;
+        let supports_basket;
+        let supports_coupon; 
+        let supports_ask_begin_session;
+        let supports_enhanced_item_number_information;
+
+
+        //Min max price data
         bus.send_data_and_confirm_ack(&VMC_MAX_MIN_PRICE_DATA).await;
 
-        bus.send_data(&VMC_EXPANSION_REQUEST_ID_DATA).await;; //as above
+        //Expansion request
+        bus.send_data(&VMC_EXPANSION_REQUEST_ID_DATA).await; //as above
         if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await {
             if matches!(feature_level, CashlessDeviceFeatureLevel::Level3) {
                 if len != 34 {
@@ -243,11 +406,46 @@ impl CashlessDevice {
                 );
                 return None;
             }
-        }
-        else {
+        } else {
             error!("Cashless device failed to reply with expansion request data");
             return None;
         };
+
+        match feature_level {
+            CashlessDeviceFeatureLevel::Level3 => {
+                //Original level 3 features
+                supports_ftl = buf[33] & 0x01 != 0;
+                monetary_format_32_bit = buf[33] & 0x02 != 0;
+                supports_multicurrency = buf[33] & 0x04 != 0;
+                supports_negative_vend = buf[33] & 0x08 != 0;
+                supports_data_entry = buf[33] & 0x10 != 0;
+                supports_always_idle = buf[33] & 0x20 != 0;
+
+                //Newly added L3 features in 2019 spec
+                supports_remote_vend = buf[33] & 0x40 != 0;
+                supports_basket = buf[33] & 0x80 != 0;
+                supports_coupon = buf[32] & 0x01 != 0;
+                supports_ask_begin_session = buf[32] & 0x02 != 0;
+                supports_enhanced_item_number_information = buf[32] & 0x04 != 0;
+            }
+            _ => {
+                //L1-2 readers wont support any of these
+                supports_ftl = false;
+                monetary_format_32_bit = false;
+                supports_multicurrency = false;
+                supports_negative_vend = false;
+                supports_data_entry = false;
+                supports_always_idle = false;
+
+                //Newly added L3 features in 2019 spec
+                supports_remote_vend = false;
+                supports_basket = false;
+                supports_coupon= false;
+                supports_ask_begin_session = false;
+                supports_enhanced_item_number_information = false;
+            }
+        }
+                         
 
         //Buffer will now contain correct length of data for parsing expansion request
         let c = CashlessDevice {
@@ -264,38 +462,65 @@ impl CashlessDevice {
             supports_cash_sale_cmd,
 
             //Data from the expansion request
-            manufacturer_code: buf[1..4].try_into().unwrap(),
-            serial_number: buf[4..16].try_into().unwrap(),
-            model_number: buf[16..28].try_into().unwrap(),
-            software_version: buf[28..30].try_into().unwrap(),
-
-            //Level 3 features
-            supports_ftl: buf[33] & 0x01 != 0,
-            monetary_format_32_bit: buf[33] & 0x02 != 0,
-            supports_multicurrency: buf[33] & 0x04 != 0,
-            supports_negative_vend: buf[33] & 0x08 != 0,
-            supports_data_entry: buf[33] & 0x10 != 0,
-            supports_always_idle: buf[33] & 0x20 != 0,
+            manufacturer_code: {
+                match from_utf8(&buf[1..4]) {
+                    Ok(a) => str4::from(a),
+                    Err(_) => {
+                        error!("Non-ascii text in mfr code");
+                        str4::from("")
+                    }
+                }
+            },
+            serial_number: {
+                match from_utf8(&buf[4..16]) {
+                    Ok(a) => str16::from(a),
+                    Err(_) => {
+                        error!("Non-ascii text in mfr code");
+                        str16::from("")
+                    }
+                }
+            },
+            model_number: {
+                match from_utf8(&buf[16..28]) {
+                    Ok(a) => str16::from(a),
+                    Err(_) => {
+                        error!("Non-ascii text in mfr code");
+                        str16::from("")
+                    }
+                }
+            },
+            software_version: {
+                match from_utf8(&buf[28..30]) {
+                    Ok(a) => str4::from(a),
+                    Err(_) => {
+                        error!("Non-ascii text in mfr code");
+                        str4::from("")
+                    }
+                }
+            },
+            //L3 features
+            supports_ftl,
+            monetary_format_32_bit,
+            supports_multicurrency,
+            supports_negative_vend,
+            supports_data_entry,
+            supports_always_idle,
 
             //Newly added L3 features in 2019 spec
-            supports_remote_vend: buf[33] & 0x40 != 0,
-            supports_basket: buf[33] & 0x80 != 0,
-            supports_coupon: buf[32] & 0x01 != 0,
-            supports_ask_begin_session: buf[32] & 0x02 != 0,
-            supports_enhanced_item_number_information: buf[32] & 0x04 != 0,
+            supports_remote_vend,
+            supports_basket,
+            supports_coupon,
+            supports_ask_begin_session,
+            supports_enhanced_item_number_information,
         };
-        //Enable always idle
-        match bus.send_data_and_confirm_ack(&[0x17, 0x04, 0x00, 0x00, 0x00, 0x20]).await {
-            true => {
-                debug!("Option feature enable command ACKd")
-            },
-            false => {
-                error!("Option feature enable command NAK");
-            },
+
+        //Enable our desired optional features
+        match bus.send_data_and_confirm_ack(&FEATURE_FLAG_DATA).await {
+            true => debug!("Option feature enable command ACKd"),
+            false => error!("Option feature enable command NAK"),
         }
 
-        c.set_device_enabled(bus, true).await;
-
+        //Device not enabled by default, you'll need to enable it
         Some(c)
     }
 
@@ -306,21 +531,16 @@ impl CashlessDevice {
         address: [u8; 2],
     ) -> bool {
         let amount = unscaled_amount.to_le_bytes();
-        if bus.send_data_and_confirm_ack(&[
-            VEND_PREFIX,
-            VEND_CASH_SALE,
-            amount[1],
-            amount[0],
-            address[0],
-            address[1],
-        ]).await {
-            debug!("Record cash sale transaction success");
-            true
-        }
-        else {
-            debug!("Recorded cash sale transaction fail");
-            false
-        }
+        bus
+            .send_data_and_confirm_ack(&[
+                VEND_PREFIX,
+                VEND_CASH_SALE,
+                amount[1],
+                amount[0],
+                address[0],
+                address[1],
+            ])
+            .await
     }
 
     pub async fn start_transaction<T: Read + Write>(
@@ -330,163 +550,35 @@ impl CashlessDevice {
         address: [u8; 2],
     ) -> bool {
         let amount = unscaled_amount.to_le_bytes();
-        match bus.send_data_and_confirm_ack(&[
-            VEND_PREFIX,
-            VEND_REQUEST,
-            amount[1],
-            amount[0],
-            address[0],
-            address[1],
-        ]).await {
-            true => {  
-                debug!("Cashless device ACK start transaction");
-            },
-            false => {
-                error!("Cashless device did not ACK start transaction");
-                return false;
-            },
-        }
-
-        //Send poll command, and wait a max of 150 cycles (30 seconds) for someone to present a card
-        let mut buf: [u8; 64] = [0x00; 64];
-        let mut success = false;
-        for i in 0..150 {
-            //Poll reader
-            bus.send_data(&[POLL_CMD]).await;
-
-            match bus.receive_response(&mut buf).await {
-                Ok(MDBResponse::Data(len)) => {
-                    debug!("Message {=[u8]:#04x}", buf[0..len]);
-                    match buf[0] {
-                        POLL_REPLY_VEND_APPROVED => {
-                            let amount: u16 = (buf[1] as u16) << 8 | buf[2] as u16;
-                            debug!("Card reader approved vend - up to  {}", amount);
-                            success = true;
-                            break;
-                        }
-                        POLL_REPLY_VEND_DENIED => {
-                            debug!("Card reader denied vend");
-                            break;
-                        }
-                        POLL_REPLY_SESSION_CANCEL_REQUEST => {
-                            debug!("Card reader requested end of session");
-                            break;
-                        }
-                        _ => {
-                            debug!(
-                                "Unexpected reply from card reader to vend request: {=[u8]:#04x}",
-                                buf[0..len]
-                            );
-                        }
-                    }
-                }
-                Ok(MDBResponse::StatusMsg(msg)) => {
-                    match msg {
-                        MDBStatus::ACK => {
-                            debug!("Start transaction poll ACK");
-                        },
-                        MDBStatus::NAK => {
-                            debug!("Start transaction poll NAK");
-                        },
-                        _ => {},
-                    }
-                },
-                _ => {},
-            }            
-            Timer::after_millis(500).await;
-        }
-        if ! success {
-            //need to end session if denied.
-            self.end_session(bus).await;
-        }
-        success
+        bus
+            .send_data_and_confirm_ack(&[
+                VEND_PREFIX,
+                VEND_REQUEST,
+                amount[1],
+                amount[0],
+                address[0],
+                address[1],
+            ])
+            .await
     }
 
-    pub async fn cancel_transaction<T: Read + Write>(
-        &self,
-        bus: &mut Mdb<T>
-    ) -> bool {
-        bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_CANCEL]).await;
-
-
-        let mut buf: [u8; 64] = [0x00; 64];
-        bus.send_data(&[POLL_CMD]).await;
-        if let Ok(MDBResponse::Data(count)) = bus.receive_response(&mut buf).await {
-            match buf[0] {
-                POLL_REPLY_VEND_DENIED => {
-                    debug!("Vend cancelled");
-                    return true;
-                }
-                _ => {
-                    debug!("Unexpected reply");
-                }
-            }
-        }
-
-        false
+    pub async fn cancel_transaction<T: Read + Write>(&self, bus: &mut Mdb<T>) -> bool {
+        bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_CANCEL])
+            .await
     }
 
-    pub async fn vend_success<T: Read + Write>(
-        &self,
-        bus: &mut Mdb<T>, 
-        address: [u8; 2]
-    ) -> bool {
-        bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_SUCCESS, address[0],address[1]]).await
+    pub async fn vend_success<T: Read + Write>(&self, bus: &mut Mdb<T>, address: [u8; 2]) -> bool {
+        bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_SUCCESS, address[0], address[1]])
+            .await
     }
 
-    pub async fn vend_failed<T: Read + Write>(
-        &self,
-        bus: &mut Mdb<T>
-    ) -> bool {
-        bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_FAILURE]).await;
-        //poll should get 0x06 -vend denied.
-        //then we move to end session.
-        bus.send_data(&[POLL_CMD]).await;
-
-        let mut refund_complete = false;
-
-        //fixme
-        for i in 0..100 {
-            if bus.send_data_and_confirm_ack(&[POLL_CMD]).await {
-                refund_complete = true;
-                break;
-            }
-            Timer::after_millis(100).await;
-        }
-        
-        if refund_complete {
-            debug!("Refund complete");
-            true
-        }
-        else {
-            debug!("Refund FAILED - credit lost");
-            false
-        }
+    pub async fn vend_failed<T: Read + Write>(&self, bus: &mut Mdb<T>) -> bool {
+        bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_FAILURE])
+            .await
     }
-    
-    pub async fn end_session<T: Read + Write>(
-        &self,
-        bus: &mut Mdb<T>
-    ) -> bool {
-        let mut buf: [u8; 64] = [0x00; 64];
-        bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_SESSION_COMPLETE]).await;
-        bus.send_data(&[POLL_CMD]).await;
-        if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await {
-            match buf[0] {
-                POLL_REPLY_END_SESSION => {
-                    debug!("End session");
-                    return true;
-                },
-                _ => {
-                    error!(
-                        "Unexpected reply from card reader to end session: {=[u8]:#04x}",
-                        buf[0..len]
-                    );
-                }
-            }
-        };
-        error!("end session failed!");
-        return false;
+
+    pub async fn end_session<T: Read + Write>(&self, bus: &mut Mdb<T>) -> bool {
+        bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_SESSION_COMPLETE]).await
     }
 
     pub async fn set_device_enabled<T: Read + Write>(
@@ -494,30 +586,72 @@ impl CashlessDevice {
         bus: &mut Mdb<T>,
         enable: bool,
     ) -> bool {
-        if enable {
-            bus.send_data_and_confirm_ack(&[VEND_READER_PREFIX, VEND_READER_ENABLE]).await
-        } else {
-            bus.send_data_and_confirm_ack(&[VEND_READER_PREFIX, VEND_READER_DISABLE]).await
-        }
-    }
-
-    pub async fn poll_heartbeat<T: Read + Write>(
-        &self,
-        bus: &mut Mdb<T>
-    ) -> bool {
-        //This function is naaasty, as it should actually do something with the poll response....
-        //We are only using it because if we don't poll the cashless device, it will keep rebooting
-        let mut buf: [u8; 64] = [0x00; 64];
-
-        bus.send_data(&[POLL_CMD]).await;
-        if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await {
-            if len != 0 {
-                debug!("Got non zero poll reply in heartbeat - we have missed an event");
-            }
-            true
+        let cmd = if enable {
+            VEND_READER_ENABLE
         }
         else {
-            false
-        }
+            VEND_READER_DISABLE
+        };
+        bus.send_data_and_confirm_ack(&[VEND_READER_PREFIX, cmd]).await
+    }
+
+    pub async fn get_poll_events<T: Read + Write>(
+        &self,
+        bus: &mut Mdb<T>,
+    ) -> [Option<PollEvent>; 36] {
+        let mut events: [Option<PollEvent>; 36] = [None; 36];
+        let mut buf: [u8; 64] = [0x00; 64];
+        bus.send_data(&[POLL_CMD]).await;
+        match bus.receive_response(&mut buf).await {
+            Ok(response) => {
+                match response {
+                    MDBResponse::Data(len) => {
+                        let mut event_count: usize = 0;
+                        let mut index: usize = 0;
+                        while index < len {
+                            //Get the length of the first poll event in the buffer
+                            match self.poll_response_length(buf[index]) {
+                                Ok(event_len) => {
+                                    //Create the event
+                                    match PollEvent::try_from(&buf[index..index + event_len]) {
+                                        Ok(event) => {
+                                            events[event_count] = Some(event);
+                                            event_count += 1;
+                                        }
+                                        Err(_) => {
+                                            error!(
+                                                "Invalid poll event data: {=[u8]:#04x}",
+                                                buf[index..index + event_len]
+                                            );
+                                        }
+                                    }
+                                    index += event_len;
+                                }
+                                Err(_) => {
+                                    //If this byte is invalid, we cannot parse anything further.
+                                    error!(
+                                        "Invalid poll byte - abandoning further message parsing"
+                                    );
+                                    return events;
+                                }
+                            }
+                        }
+                    }
+                    MDBResponse::StatusMsg(x) => {
+                        //If we got an ACK, that means there aren't any events.
+                        match x {
+                            MDBStatus::NAK => {
+                                error!("Cashless device poll NAK")
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                error!("Cashless poll generated MDB error");
+            }
+        };
+        events
     }
 }
