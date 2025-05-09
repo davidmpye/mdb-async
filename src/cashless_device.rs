@@ -170,44 +170,52 @@ impl TryFrom<&[u8]> for PollEvent {
                 match bytes.len() {
                     3 => {
                         //Level 1 reader
-                        Ok(PollEvent::BeginSessionLevelBasic(u16::from_le_bytes(bytes[1..3].try_into().unwrap())))
+                        Ok(PollEvent::BeginSessionLevelBasic(u16::from_le_bytes(
+                            bytes[1..3].try_into().unwrap(),
+                        )))
                     }
                     10 => {
                         //Level 2/3 reader
                         Ok(PollEvent::BeginSessionLevelAdvanced(
-                            BeginSessionAdvancedData { 
-                                funds_available: u16::from_le_bytes(bytes[1..3].try_into().unwrap()),
-                                payment_media_id: u32::from_le_bytes(bytes[3..7].try_into().unwrap()),
+                            BeginSessionAdvancedData {
+                                funds_available: u16::from_le_bytes(
+                                    bytes[1..3].try_into().unwrap(),
+                                ),
+                                payment_media_id: u32::from_le_bytes(
+                                    bytes[3..7].try_into().unwrap(),
+                                ),
                                 payment_type: bytes[7],
                                 payment_data: u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
-                            }
+                            },
                         ))
                     }
                     _ => {
                         //Unrecognised length
                         Err(PollError::InvalidEvent)
-                    },
+                    }
                 }
             }
             POLL_REPLY_SESSION_CANCEL_REQUEST => Ok(PollEvent::SessionCancelRequest),
             POLL_REPLY_VEND_APPROVED => match bytes.len() {
-                3 => Ok(PollEvent::VendApproved(u16::from_le_bytes(bytes[1..3].try_into().unwrap()))),
-                _ => Err(PollError::InvalidEvent)
-            }
+                3 => Ok(PollEvent::VendApproved(u16::from_le_bytes(
+                    bytes[1..3].try_into().unwrap(),
+                ))),
+                _ => Err(PollError::InvalidEvent),
+            },
             POLL_REPLY_VEND_DENIED => Ok(PollEvent::VendDenied),
             POLL_REPLY_END_SESSION => Ok(PollEvent::EndSession),
             POLL_REPLY_CANCELLED => Ok(PollEvent::Cancelled),
             POLL_REPLY_PERIPHERAL_ID => Ok(PollEvent::PeripheralId),
             POLL_REPLY_MALFUNCTION => {
                 match bytes.len() {
-                    2 => match bytes[1]  {
+                    2 => match bytes[1] {
                         0x00 => Ok(PollEvent::Malfunction(MalfunctionCode::PaymentMedia)),
                         0x01 => Ok(PollEvent::Malfunction(MalfunctionCode::InvalidPaymentMedia)),
                         0x02 => Ok(PollEvent::Malfunction(MalfunctionCode::Tamper)),
                         0x03 => Ok(PollEvent::Malfunction(MalfunctionCode::MfrErr1)),
                         0x04 => Ok(PollEvent::Malfunction(MalfunctionCode::CommsErr2)),
                         0x05 => Ok(PollEvent::Malfunction(MalfunctionCode::RequiresService)),
-                        //0x06 is 'unassigned 2' ¯\_(ツ)_/¯ 
+                        //0x06 is 'unassigned 2' ¯\_(ツ)_/¯
                         0x07 => Ok(PollEvent::Malfunction(MalfunctionCode::MfrErr2)),
                         0x08 => Ok(PollEvent::Malfunction(MalfunctionCode::ReaderFailure3)),
                         0x09 => Ok(PollEvent::Malfunction(MalfunctionCode::CommsErr3)),
@@ -216,9 +224,9 @@ impl TryFrom<&[u8]> for PollEvent {
                         0x0C => Ok(PollEvent::Malfunction(MalfunctionCode::RefundErr)),
                         _ => Ok(PollEvent::Malfunction(MalfunctionCode::Unassigned)),
                     },
-                    _ => Err(PollError::InvalidEvent)
+                    _ => Err(PollError::InvalidEvent),
                 }
-            },
+            }
             POLL_REPLY_OUT_OF_SEQUENCE => Ok(PollEvent::CmdOutOfSequence),
             POLL_REPLY_REVALUE_APPROVED => Ok(PollEvent::RevalueApproved),
             POLL_REPLY_USER_FILE_DATA => Ok(PollEvent::UserFileData),
@@ -367,22 +375,20 @@ impl CashlessDevice {
         let has_display = buf[0x07] & 0x04 != 0;
         let supports_cash_sale_cmd = buf[0x07] & 0x08 != 0;
 
-
         //L3 features (only if we are a l3 reader)
         let supports_ftl;
         let monetary_format_32_bit;
-        let supports_multicurrency; 
-        let supports_negative_vend; 
+        let supports_multicurrency;
+        let supports_negative_vend;
         let supports_data_entry;
         let supports_always_idle;
 
         //Newly added L3 features in 2019 spec
         let supports_remote_vend;
         let supports_basket;
-        let supports_coupon; 
+        let supports_coupon;
         let supports_ask_begin_session;
         let supports_enhanced_item_number_information;
-
 
         //Min max price data
         bus.send_data_and_confirm_ack(&VMC_MAX_MIN_PRICE_DATA).await;
@@ -440,12 +446,11 @@ impl CashlessDevice {
                 //Newly added L3 features in 2019 spec
                 supports_remote_vend = false;
                 supports_basket = false;
-                supports_coupon= false;
+                supports_coupon = false;
                 supports_ask_begin_session = false;
                 supports_enhanced_item_number_information = false;
             }
         }
-                         
 
         //Buffer will now contain correct length of data for parsing expansion request
         let c = CashlessDevice {
@@ -531,16 +536,15 @@ impl CashlessDevice {
         address: [u8; 2],
     ) -> bool {
         let amount = unscaled_amount.to_le_bytes();
-        bus
-            .send_data_and_confirm_ack(&[
-                VEND_PREFIX,
-                VEND_CASH_SALE,
-                amount[1],
-                amount[0],
-                address[0],
-                address[1],
-            ])
-            .await
+        bus.send_data_and_confirm_ack(&[
+            VEND_PREFIX,
+            VEND_CASH_SALE,
+            amount[1],
+            amount[0],
+            address[0],
+            address[1],
+        ])
+        .await
     }
 
     pub async fn start_transaction<T: Read + Write>(
@@ -550,16 +554,15 @@ impl CashlessDevice {
         address: [u8; 2],
     ) -> bool {
         let amount = unscaled_amount.to_le_bytes();
-        bus
-            .send_data_and_confirm_ack(&[
-                VEND_PREFIX,
-                VEND_REQUEST,
-                amount[1],
-                amount[0],
-                address[0],
-                address[1],
-            ])
-            .await
+        bus.send_data_and_confirm_ack(&[
+            VEND_PREFIX,
+            VEND_REQUEST,
+            amount[1],
+            amount[0],
+            address[0],
+            address[1],
+        ])
+        .await
     }
 
     pub async fn cancel_transaction<T: Read + Write>(&self, bus: &mut Mdb<T>) -> bool {
@@ -578,7 +581,8 @@ impl CashlessDevice {
     }
 
     pub async fn end_session<T: Read + Write>(&self, bus: &mut Mdb<T>) -> bool {
-        bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_SESSION_COMPLETE]).await
+        bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_SESSION_COMPLETE])
+            .await
     }
 
     pub async fn set_device_enabled<T: Read + Write>(
@@ -588,14 +592,14 @@ impl CashlessDevice {
     ) -> bool {
         let cmd = if enable {
             VEND_READER_ENABLE
-        }
-        else {
+        } else {
             VEND_READER_DISABLE
         };
-        bus.send_data_and_confirm_ack(&[VEND_READER_PREFIX, cmd]).await
+        bus.send_data_and_confirm_ack(&[VEND_READER_PREFIX, cmd])
+            .await
     }
 
-    pub async fn get_poll_events<T: Read + Write>(
+    pub async fn poll<T: Read + Write>(
         &self,
         bus: &mut Mdb<T>,
     ) -> [Option<PollEvent>; 36] {
