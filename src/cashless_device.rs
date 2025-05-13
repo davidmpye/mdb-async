@@ -100,7 +100,7 @@ pub enum CashlessDeviceFeatureLevel {
     Level3,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct BeginSessionAdvancedData {
     funds_available: u16,
     payment_media_id: u32,
@@ -108,7 +108,7 @@ pub struct BeginSessionAdvancedData {
     payment_data: u16,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub enum MalfunctionCode {
     PaymentMedia,
     InvalidPaymentMedia,
@@ -126,7 +126,7 @@ pub enum MalfunctionCode {
 }
 
 //A poll event might be one of the following:
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub enum PollEvent {
     JustReset,
     ReaderConfigData,
@@ -616,9 +616,11 @@ impl CashlessDevice {
                             //Get the length of the first poll event in the buffer
                             match self.poll_response_length(buf[index]) {
                                 Ok(event_len) => {
+                                    debug!("Parsing poll event - size {}", event_len);
                                     //Create the event
                                     match PollEvent::try_from(&buf[index..index + event_len]) {
                                         Ok(event) => {
+                                            debug!("Parsed a poll event - {}", event);
                                             events[event_count] = Some(event);
                                             event_count += 1;
                                         }
