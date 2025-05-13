@@ -197,9 +197,11 @@ impl TryFrom<&[u8]> for PollEvent {
             }
             POLL_REPLY_SESSION_CANCEL_REQUEST => Ok(PollEvent::SessionCancelRequest),
             POLL_REPLY_VEND_APPROVED => match bytes.len() {
-                3 => Ok(PollEvent::VendApproved(u16::from_le_bytes(
-                    bytes[1..3].try_into().unwrap(),
-                ))),
+                3 => {
+                    debug!("Val bytes are {=[u8]:#04x}", bytes[1..3]);
+                    Ok(PollEvent::VendApproved(u16::from_le_bytes(
+                    bytes[1..3].try_into().unwrap())))
+                },
                 _ => Err(PollError::InvalidEvent),
             },
             POLL_REPLY_VEND_DENIED => Ok(PollEvent::VendDenied),
