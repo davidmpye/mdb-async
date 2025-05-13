@@ -620,7 +620,7 @@ impl CashlessDevice {
                                     //Create the event
                                     match PollEvent::try_from(&buf[index..index + event_len]) {
                                         Ok(event) => {
-                                            debug!("Parsed a poll event - {}", event);
+                                            debug!("Parsed a poll event");
                                             events[event_count] = Some(event);
                                             event_count += 1;
                                         }
