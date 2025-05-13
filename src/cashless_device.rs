@@ -170,22 +170,16 @@ impl TryFrom<&[u8]> for PollEvent {
                 match bytes.len() {
                     3 => {
                         //Level 1 reader
-                        Ok(PollEvent::BeginSessionLevelBasic(u16::from_le_bytes(
-                            bytes[1..3].try_into().unwrap(),
-                        )))
+                        Ok(PollEvent::BeginSessionLevelBasic(u16::from_le_bytes([bytes[1], bytes[2]])))
                     }
                     10 => {
                         //Level 2/3 reader
                         Ok(PollEvent::BeginSessionLevelAdvanced(
                             BeginSessionAdvancedData {
-                                funds_available: u16::from_le_bytes(
-                                    bytes[1..3].try_into().unwrap(),
-                                ),
-                                payment_media_id: u32::from_le_bytes(
-                                    bytes[3..7].try_into().unwrap(),
-                                ),
+                                funds_available: u16::from_le_bytes([bytes[1], bytes[2]]),
+                                payment_media_id: u32::from_le_bytes([bytes[3], bytes[4], bytes[5], bytes[6]]),
                                 payment_type: bytes[7],
-                                payment_data: u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
+                                payment_data: u16::from_le_bytes([bytes[1], bytes[2]]),
                             },
                         ))
                     }
@@ -198,9 +192,7 @@ impl TryFrom<&[u8]> for PollEvent {
             POLL_REPLY_SESSION_CANCEL_REQUEST => Ok(PollEvent::SessionCancelRequest),
             POLL_REPLY_VEND_APPROVED => match bytes.len() {
                 3 => {
-                    debug!("Val bytes are {=[u8]:#04x}", bytes[1..3]);
-                    Ok(PollEvent::VendApproved(u16::from_le_bytes(
-                    bytes[1..3].try_into().unwrap())))
+                    Ok(PollEvent::VendApproved(u16::from_le_bytes([bytes[1], bytes[2]])))
                 },
                 _ => Err(PollError::InvalidEvent),
             },
