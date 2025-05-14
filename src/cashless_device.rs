@@ -560,8 +560,15 @@ impl CashlessDevice {
     }
 
     pub async fn cancel_transaction<T: Read + Write>(&self, bus: &mut Mdb<T>) -> bool {
-        bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_CANCEL])
-            .await
+        let mut buf:[u8;1] = [0x00;1];
+        bus.send_data(&[VEND_PREFIX, VEND_CANCEL]).await;
+        if let Ok(response) = bus.receive_response(&mut buf).await {
+            if matches!(response, MDBResponse::Data(1)) {
+                return true;
+            }
+        }
+        debug!("Unexpected reply to cancel transaction");
+        return false
     }
 
     pub async fn vend_success<T: Read + Write>(&self, bus: &mut Mdb<T>, address: [u8; 2]) -> bool {
@@ -575,8 +582,15 @@ impl CashlessDevice {
     }
 
     pub async fn end_session<T: Read + Write>(&self, bus: &mut Mdb<T>) -> bool {
-        bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_SESSION_COMPLETE])
-            .await
+        let mut buf:[u8;1] = [0x00;1];
+        bus.send_data(&[VEND_PREFIX,  VEND_SESSION_COMPLETE]).await;
+        if let Ok(response) = bus.receive_response(&mut buf).await {
+            if matches!(response, MDBResponse::Data(1)) {
+                return true;
+            }
+        }
+        debug!("Unexpected reply to end session");
+        return false;
     }
 
     pub async fn set_device_enabled<T: Read + Write>(
