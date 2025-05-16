@@ -4,8 +4,6 @@ pub mod cashless_device;
 
 use defmt::*;
 use embedded_io_async::{Read, Write};
-use embassy_time::{Duration, Timer};
-
 
 pub enum MDBStatus {
     ACK,

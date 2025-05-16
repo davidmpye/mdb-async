@@ -108,7 +108,7 @@ pub enum CoinAcceptorLevel {
 impl CoinAcceptor {
     pub async fn init<T: Read + Write> (bus: &mut Mdb<T>) -> Option<Self> {
         //Start with a reset
-        bus.send_data_and_confirm_ack(&[RESET_CMD]).await;
+        let _ = bus.send_data_and_confirm_ack(&[RESET_CMD]).await;
 
         //Give it 100mS to get over its' reset
         Timer::after_millis(100).await;
@@ -260,7 +260,7 @@ impl CoinAcceptor {
 
             return Some(coinacceptor);
         }
-        return None;
+        None
     }
     
     pub async fn l3_enable_features<T: Read + Write>(
@@ -310,11 +310,11 @@ impl CoinAcceptor {
                 }
             }
             debug!("Coin counts updated");
-            return Ok(());
+            Ok(())
         }
         else {
             error!("Incorrect response to coin count update request");
-            return Err(());
+            Err(())
         }
     }
 
@@ -385,7 +385,7 @@ impl CoinAcceptor {
                 let mut num_to_pay = ((credit - amount_paid) / coin.unscaled_value) as u8;
 
                 //Cannot pay out more coins than we have in the tube
-                if num_to_pay as u8 > coin.num_coins {
+                if num_to_pay > coin.num_coins {
                     num_to_pay = coin.num_coins;
                 }
 
@@ -401,7 +401,7 @@ impl CoinAcceptor {
                         i,
                         coin.unscaled_value
                     );
-                    if let Ok(_) = bus.send_data_and_confirm_ack(&[DISPENSE_CMD, b]).await {
+                    if bus.send_data_and_confirm_ack(&[DISPENSE_CMD, b]).await.is_ok() {
                         defmt::debug!("Payout cmd acked - payout in progress");
                         amount_paid += coin.unscaled_value * num_to_pay as u16;
                         num_to_pay -= num_to_dispense;
@@ -428,7 +428,7 @@ impl CoinAcceptor {
             defmt::debug!("Payout value exceeds allowable limit");
             0
         } else {
-            bus.send_data_and_confirm_ack(&[L3_CMD_PREFIX, L3_PAYOUT_CMD, credit_scaled as u8]).await;
+            let _ = bus.send_data_and_confirm_ack(&[L3_CMD_PREFIX, L3_PAYOUT_CMD, credit_scaled as u8]).await;
 
             let mut buf: [u8; 16] = [0x00; 16];
             let mut complete: bool = false;

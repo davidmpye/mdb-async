@@ -326,17 +326,18 @@ impl CashlessDevice {
         //we know the level of device we are talking to, we can't tell how long the poll subcommands are.
 
         //Start with initial reset
-        bus.send_data_and_confirm_ack(&[RESET]).await;
+        let _ = bus.send_data_and_confirm_ack(&[RESET]).await;
 
         //Initial poll, should reply JUST RESET
         bus.send_data(&[POLL_CMD]).await;
         let mut buf: [u8; 64] = [0x00; 64];
         if let Ok(MDBResponse::Data(len)) = bus.receive_response(&mut buf).await {
-            if buf[0] != POLL_REPLY_JUST_RESET {
+            if len == 1 && buf[0] == POLL_REPLY_JUST_RESET {
+                debug!("Received JUST_RESET from cashless device post poll");
+            }
+            else {
                 error!("Unexpected reply from cashless device post reset");
                 return None;
-            } else {
-                debug!("Received JUST_RESET from cashless device post poll");
             }
         }
 
@@ -385,7 +386,7 @@ impl CashlessDevice {
         let supports_enhanced_item_number_information;
 
         //Min max price data
-        bus.send_data_and_confirm_ack(&VMC_MAX_MIN_PRICE_DATA).await;
+        let _ = bus.send_data_and_confirm_ack(&VMC_MAX_MIN_PRICE_DATA).await;
 
         //Expansion request
         bus.send_data(&VMC_EXPANSION_REQUEST_ID_DATA).await; //as above
@@ -568,7 +569,7 @@ impl CashlessDevice {
             }
         }
         debug!("Unexpected reply to cancel transaction");
-        return Err(());
+        Err(())
     }
 
     pub async fn vend_success<T: Read + Write>(&self, bus: &mut Mdb<T>, address: [u8; 2]) -> Result<(),()> {
@@ -590,7 +591,7 @@ impl CashlessDevice {
             }
         }
         debug!("Unexpected reply to end session");
-        return Err(());
+        Err(())
     }
 
     pub async fn set_device_enabled<T: Read + Write>(
@@ -653,11 +654,8 @@ impl CashlessDevice {
                     }
                     MDBResponse::StatusMsg(x) => {
                         //If we got an ACK, that means there aren't any events.
-                        match x {
-                            MDBStatus::NAK => {
+                        if matches!(x, MDBStatus::NAK) {
                                 error!("Cashless device poll NAK")
-                            }
-                            _ => {}
                         }
                     }
                 }
