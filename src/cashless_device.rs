@@ -515,8 +515,8 @@ impl CashlessDevice {
 
         //Enable our desired optional features
         match bus.send_data_and_confirm_ack(&FEATURE_FLAG_DATA).await {
-            true => debug!("Option feature enable command ACKd"),
-            false => error!("Option feature enable command NAK"),
+            Ok(_) => debug!("Option feature enable command ACKd"),
+            Err(_) => error!("Option feature enable command NAK"),
         }
 
         //Device not enabled by default, you'll need to enable it
@@ -528,7 +528,7 @@ impl CashlessDevice {
         bus: &mut Mdb<T>,
         unscaled_amount: u16,
         address: [u8; 2],
-    ) -> bool {
+    ) -> Result<(),()> {
         let amount = unscaled_amount.to_le_bytes();
         bus.send_data_and_confirm_ack(&[
             VEND_PREFIX,
@@ -538,7 +538,7 @@ impl CashlessDevice {
             address[0],
             address[1],
         ])
-        .await
+        .await 
     }
 
     pub async fn start_transaction<T: Read + Write>(
@@ -546,9 +546,9 @@ impl CashlessDevice {
         bus: &mut Mdb<T>,
         unscaled_amount: u16,
         address: [u8; 2],
-    ) -> bool {
+    ) -> Result<(),()> {
         let amount = unscaled_amount.to_le_bytes();
-        bus.send_data_and_confirm_ack(&[
+            bus.send_data_and_confirm_ack(&[
             VEND_PREFIX,
             VEND_REQUEST,
             amount[1],
@@ -556,48 +556,48 @@ impl CashlessDevice {
             address[0],
             address[1],
         ])
-        .await
+        .await 
     }
 
-    pub async fn cancel_transaction<T: Read + Write>(&self, bus: &mut Mdb<T>) -> bool {
+    pub async fn cancel_transaction<T: Read + Write>(&self, bus: &mut Mdb<T>) -> Result<(),()> {
         let mut buf:[u8;1] = [0x00;1];
         bus.send_data(&[VEND_PREFIX, VEND_CANCEL]).await;
-        if let Ok(response) = bus.receive_response(&mut buf).await {
-            if matches!(response, MDBResponse::Data(1)) {
-                return true;
+        if let Ok(MDBResponse::Data(1)) = bus.receive_response(&mut buf).await {
+            if buf[0] == POLL_REPLY_CANCELLED {
+                return Ok(());   
             }
         }
         debug!("Unexpected reply to cancel transaction");
-        return false
+        return Err(());
     }
 
-    pub async fn vend_success<T: Read + Write>(&self, bus: &mut Mdb<T>, address: [u8; 2]) -> bool {
+    pub async fn vend_success<T: Read + Write>(&self, bus: &mut Mdb<T>, address: [u8; 2]) -> Result<(),()> {
         bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_SUCCESS, address[0], address[1]])
-            .await
+            .await 
     }
 
-    pub async fn vend_failed<T: Read + Write>(&self, bus: &mut Mdb<T>) -> bool {
+    pub async fn vend_failed<T: Read + Write>(&self, bus: &mut Mdb<T>) -> Result<(),()> {
         bus.send_data_and_confirm_ack(&[VEND_PREFIX, VEND_FAILURE])
             .await
     }
 
-    pub async fn end_session<T: Read + Write>(&self, bus: &mut Mdb<T>) -> bool {
+    pub async fn end_session<T: Read + Write>(&self, bus: &mut Mdb<T>) ->  Result<(),()> {
         let mut buf:[u8;1] = [0x00;1];
         bus.send_data(&[VEND_PREFIX,  VEND_SESSION_COMPLETE]).await;
         if let Ok(response) = bus.receive_response(&mut buf).await {
-            if matches!(response, MDBResponse::Data(1)) {
-                return true;
+            if matches!(response, MDBResponse::Data(1)) && buf[0] == POLL_REPLY_END_SESSION {
+                return Ok(());
             }
         }
         debug!("Unexpected reply to end session");
-        return false;
+        return Err(());
     }
 
     pub async fn set_device_enabled<T: Read + Write>(
         &self,
         bus: &mut Mdb<T>,
         enable: bool,
-    ) -> bool {
+    ) -> Result<(),()> {
         let cmd = if enable {
             VEND_READER_ENABLE
         } else {

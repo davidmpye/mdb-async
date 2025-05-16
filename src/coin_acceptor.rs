@@ -272,7 +272,7 @@ impl CoinAcceptor {
             error!("Tried to enable L3 features on non L3 coin acceptor");
             Err(())
         } else {
-            if bus.send_data_and_confirm_ack (
+            if let Ok(_) = bus.send_data_and_confirm_ack (
                 &[
                     L3_CMD_PREFIX,
                     L3_FEATURE_ENABLE_CMD,
@@ -324,7 +324,7 @@ impl CoinAcceptor {
         coin_mask: u16,
     ) -> Result<(), ()> {
         //Which coins you want to enable - NB We enable manual dispense for all coins automatically.
-        if bus.send_data_and_confirm_ack(&[
+        if let Ok(_) = bus.send_data_and_confirm_ack(&[
             COIN_TYPE_CMD,
             (coin_mask & 0xFF) as u8,
             ((coin_mask >> 8) & 0xFF) as u8,
@@ -401,7 +401,7 @@ impl CoinAcceptor {
                         i,
                         coin.unscaled_value
                     );
-                    if bus.send_data_and_confirm_ack(&[DISPENSE_CMD, b]).await {
+                    if let Ok(_) = bus.send_data_and_confirm_ack(&[DISPENSE_CMD, b]).await {
                         defmt::debug!("Payout cmd acked - payout in progress");
                         amount_paid += coin.unscaled_value * num_to_pay as u16;
                         num_to_pay -= num_to_dispense;

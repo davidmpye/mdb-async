@@ -19,6 +19,7 @@ pub enum MDBError {
     BufferOverrun,
     MalformedMessage,
     UartError,
+    NoAck
 }
 pub enum MDBResponse<T, U> {
     Data(T),
@@ -56,16 +57,16 @@ impl<T: Read + Write> Mdb<T> {
         let _ = self.uart.write(&[0x00, checksum]).await;
     }
 
-    pub async fn send_data_and_confirm_ack(&mut self, msg: &[u8]) -> bool {
+    pub async fn send_data_and_confirm_ack(&mut self, msg: &[u8]) -> Result<(), ()> {
         let _ = self.send_data(msg).await;
         //We supply an empty buffer as we don't want any bytes received, only a status.
         match self.receive_response(&mut []).await {
             Ok(MDBResponse::StatusMsg(MDBStatus::ACK)) => {
-                true
+                Ok(())
             },
             _ => {
-                false
-            },
+                Err(())
+            }
         }
     }
 
