@@ -1,11 +1,15 @@
 [package]
 name = "mdb-async"
 version = "0.1.0"
+authors = [ "David Pye <davidmpye@gmail.com>" ]
 edition = "2021"
-licence = ""
+repository = "https://github.com/davidmpye/mdb-async"
+description = "Async library to provide support for the MDB (MultiDrop Bus) used by vending machines"
+license = "MIT OR Apache-2.0"
+categories = ["embedded", "no-std"]
+
 [dependencies]
 defmt = "0.3.10"
 embassy-time = "0.4.0"
 embedded-io-async = "0.6.1"
-enumn = "0.1.14"
 fixedstr = { version = "0.5.8", features = ["serde", "no-alloc"] }
