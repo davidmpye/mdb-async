@@ -611,7 +611,7 @@ impl CashlessDevice {
     pub async fn poll<T: Read + Write>(
         &self,
         bus: &mut Mdb<T>,
-    ) -> [Option<PollEvent>; 36] {
+    ) -> Result<[Option<PollEvent>; 36],()> {
         let mut events: [Option<PollEvent>; 36] = [None; 36];
         let mut buf: [u8; 64] = [0x00; 64];
         bus.send_data(&[POLL_CMD]).await;
@@ -636,8 +636,8 @@ impl CashlessDevice {
                                         Err(_) => {
                                             error!(
                                                 "Invalid poll event data: {=[u8]:#04x}",
-                                                buf[index..index + event_len]
-                                            );
+                                                buf[index..index + event_len]);
+                                            return Err(());
                                         }
                                     }
                                     index += event_len;
@@ -647,7 +647,7 @@ impl CashlessDevice {
                                     error!(
                                         "Invalid poll byte - abandoning further message parsing"
                                     );
-                                    return events;
+                                    return Err(());
                                 }
                             }
                         }
@@ -662,8 +662,9 @@ impl CashlessDevice {
             }
             Err(_) => {
                 error!("Cashless poll generated MDB error");
+                return Err(());
             }
         };
-        events
+        Ok(events)
     }
 }
